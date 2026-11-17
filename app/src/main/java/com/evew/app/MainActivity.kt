@@ -1,5 +1,7 @@
 package com.evew.app
 
+import com.evew.app.R
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
