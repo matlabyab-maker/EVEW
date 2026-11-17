@@ -1,9 +1,9 @@
 # EVEW — Android Video Editor Project
 
 - **Repository / Gradle root:** `EVEW`
-- **Android app label:** `EVeditor`
-- **Application ID / namespace:** `com.evc.app` (preserved)
-- **Version:** `0.2.195` (`versionCode 394`)
+- **Android app label:** `EVEW`
+- **Application ID / namespace:** `com.evew.app` (preserved)
+- **Version:** `0.2.197` (`versionCode 396`)
 - **Minimum Android:** API 24
 - **Target / Compile SDK:** 35
 - **Target ABI:** `armeabi-v7a` (32-bit ARM)
@@ -24,9 +24,9 @@ This ZIP intentionally contains **no `.git` directory, Git history, or configure
 
 If the Actions workflow does not start, first verify on GitHub that `.github/workflows/android.yml` exists in the pushed branch and that the first Commit included it. The workflow is not restricted to `main` or `master`.
 
-## Preserved Android identity
+## Independent Android identity
 
-The `applicationId`, namespace, source package, and app label are intentionally unchanged. Renaming the repository does not create a different installed Android app.
+The `applicationId`, namespace, and source package are `com.evew.app`, isolated from the EVC project so both apps can be installed independently.
 
 ## Verification status
 

@@ -4,19 +4,19 @@ plugins {
 }
 
 android {
-    namespace = "com.evc.app"
+    namespace = "com.evew.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.evc.app"
+        applicationId = "com.evew.app"
         minSdk = 24
         targetSdk = 35
         // This release targets only 32-bit ARM devices to reduce APK size.
         ndk {
             abiFilters += listOf("armeabi-v7a")
         }
-        versionCode = 394
-        versionName = "0.2.195"
+        versionCode = 396
+        versionName = "0.2.197"
     }
 
     buildTypes {
