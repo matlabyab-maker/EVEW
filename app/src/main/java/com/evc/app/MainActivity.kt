@@ -121,9 +121,9 @@ class MainActivity : Activity() {
         if (!suppressStoryboardAutoApply && selectedUri != null) applyStoryboardTimeRange()
     }
     private val worker = Executors.newSingleThreadExecutor()
-    // Decode storyboard thumbnails with five parallel workers; each worker owns its MediaMetadataRetriever.
-    // Five evenly available workers keep extraction parallel without overloading mobile decoders.
-    private val storyboardFrameWorkers = Executors.newFixedThreadPool(5)
+    // Decode storyboard thumbnails with three parallel workers; each worker owns its MediaMetadataRetriever.
+    // Three parallel workers balance extraction speed with mobile decoder and memory load.
+    private val storyboardFrameWorkers = Executors.newFixedThreadPool(3)
     // Keep timeline sampling independent so storyboard frames and the timeline do not share a decoder.
     private val timelineThumbnailWorker = Executors.newSingleThreadExecutor()
     private val selectedFrames = linkedSetOf<Int>()
@@ -4104,7 +4104,7 @@ class MainActivity : Activity() {
     /** Exports the timeline edit (cut points + deleted ranges) as one continuous video.
      *  This path is intentionally independent of storyboard frame selection.
      */
-    private fun exportTimelineEditedVideo() {
+    private fun exportTimelineEditedVideo(preserveSourceCodec: Boolean = false) {
         val source = selectedUri
         if (source == null || videoDurationMs <= 0L) {
             Toast.makeText(this, "ابتدا یک ویدیوی معتبر انتخاب کنید", Toast.LENGTH_SHORT).show()
@@ -4138,7 +4138,7 @@ class MainActivity : Activity() {
         worker.execute {
             var result: File? = null
             var error: String? = null
-            try { result = muxRemainingRanges(source, keptRanges) }
+            try { result = if (preserveSourceCodec) muxSourceCodecRanges(source, keptRanges) else muxRemainingRanges(source, keptRanges) }
             catch (e: Exception) { error = e.message ?: e.javaClass.simpleName }
             mainHandler.post {
                 button.isEnabled = true
@@ -4151,10 +4151,10 @@ class MainActivity : Activity() {
                 }
                 try {
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_timeline_edited_${System.currentTimeMillis()}", outputExtension()))
-                        put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_timeline_edited_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
+                        put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
@@ -4166,7 +4166,7 @@ class MainActivity : Activity() {
                     writeOutputInfoReport(outUri)
                     file.delete()
                     restoreNormalStoryboardAfterExport()
-                    statusText.text = "خروجی نوار زمان در Movies/EVC ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند و استوری‌بورد دخالتی نداشت."
+                    statusText.text = if (preserveSourceCodec) "خروجی نوار زمان با حفظ کدک اصلی در Movies/EVEW ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند." else "خروجی نوار زمان در Movies/EVC ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند و استوری‌بورد دخالتی نداشت."
                     Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     file.delete()
@@ -4177,7 +4177,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun exportTimelineSegmentsSeparately() {
+    private fun exportTimelineSegmentsSeparately(preserveSourceCodec: Boolean = false) {
         val source = selectedUri
         if (source == null || videoDurationMs <= 0L) {
             Toast.makeText(this, "ابتدا یک ویدیوی معتبر انتخاب کنید", Toast.LENGTH_SHORT).show()
@@ -4189,8 +4189,22 @@ class MainActivity : Activity() {
             return
         }
         val deleted = synchronized(deletedTimelineRanges) { deletedTimelineRanges.toList() }
-        val segments = (0 until boundaries.size - 1).map { boundaries[it] to boundaries[it + 1] }
-            .filter { (a, b) -> b > a && deleted.none { d -> d.first <= a && d.second >= b } }
+            .map { it.first.coerceIn(0L, videoDurationMs) to it.second.coerceIn(0L, videoDurationMs) }
+            .filter { it.second > it.first }.sortedBy { it.first }
+        val segments = mutableListOf<Pair<Long, Long>>()
+        for (i in 0 until boundaries.size - 1) {
+            val start = boundaries[i]
+            val end = boundaries[i + 1]
+            if (end <= start) continue
+            var cursor = start
+            for (cut in deleted) {
+                if (cut.second <= cursor || cut.first >= end) continue
+                if (cut.first > cursor) segments.add(cursor to minOf(cut.first, end))
+                cursor = maxOf(cursor, cut.second)
+                if (cursor >= end) break
+            }
+            if (cursor < end) segments.add(cursor to end)
+        }
         if (segments.isEmpty()) {
             Toast.makeText(this, "قطعهٔ قابل ذخیره‌ای باقی نمانده است", Toast.LENGTH_LONG).show()
             return
@@ -4205,12 +4219,12 @@ class MainActivity : Activity() {
                 var temp: File? = null
                 var outUri: Uri? = null
                 try {
-                    temp = muxRemainingRanges(source, listOf(range))
+                    temp = if (preserveSourceCodec) muxSourceCodecRanges(source, listOf(range)) else muxRemainingRanges(source, listOf(range))
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_segment_${(index + 1).toString().padStart(3, '0')}_${System.currentTimeMillis()}", outputExtension()))
-                        put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_segment_${(index + 1).toString().padStart(3, '0')}_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
+                        put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
@@ -4233,7 +4247,7 @@ class MainActivity : Activity() {
             }
             mainHandler.post {
                 button.isEnabled = true
-                statusText.text = if (errors.isEmpty()) "$saved قطعه به‌صورت فایل‌های جداگانه در Movies/EVC ذخیره شد؛ بدون رمزگذاری مجدد" else "$saved قطعه ذخیره شد؛ ${errors.size} قطعه ناموفق بود: ${errors.first()}"
+                statusText.text = if (errors.isEmpty()) "$saved قطعه با حفظ کدک اصلی در Movies/EVEW ذخیره شد؛ بدون رمزگذاری مجدد" else "$saved قطعه ذخیره شد؛ ${errors.size} قطعه ناموفق بود: ${errors.first()}"
                 Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show()
             }
         }
@@ -4629,11 +4643,7 @@ class MainActivity : Activity() {
         }
         actionsRow.addView(actionButton("Splits") { showOriginalSplitDialog() })
         actionsRow.addView(actionButton("Save As") { launchSaveAs() })
-        actionsRow.addView(actionButton("Ori") { exportOriginalCopy() })
-        actionsRow.addView(actionButton("Original Codecs") {
-            Toast.makeText(this, "حالت حفظ کدک اصلی: بخش‌های بدون افکت با Stream Copy حفظ می‌شوند؛ افکت‌هایی که نیازمند فیلتر هستند دوباره رمزگذاری می‌شوند.", Toast.LENGTH_LONG).show()
-            exportCombinedChanges()
-        })
+        actionsRow.addView(actionButton("Original Codecs") { exportOriginalCodecSelections() })
         panel.addView(actionsRow)
 
         AlertDialog.Builder(this)
@@ -4663,24 +4673,112 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Ori: writes a byte-identical copy of the selected source into Movies/EVEW. */
-    private fun exportOriginalCopy() {
-        val source = selectedUri ?: run { Toast.makeText(this, "ابتدا ویدیوی اصلی را انتخاب کنید", Toast.LENGTH_LONG).show(); return }
-        statusText.text = "در حال ذخیرهٔ نسخهٔ اصلی بدون رمزگذاری مجدد…"
-        Thread {
-            var outUri: Uri? = null
-            try {
-                val name = displayNameForUri(source).substringBeforeLast('.', displayNameForUri(source)) + "_Ori." + displayNameForUri(source).substringAfterLast('.', "mp4")
-                val values = ContentValues().apply { put(MediaStore.Video.Media.DISPLAY_NAME, name); put(MediaStore.Video.Media.MIME_TYPE, if (name.endsWith(".mkv", true)) "video/x-matroska" else "video/mp4"); put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/EVEW"); put(MediaStore.Video.Media.IS_PENDING, 1) }
-                outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("ساخت فایل مقصد ناموفق بود")
-                contentResolver.openInputStream(source)?.use { input -> contentResolver.openOutputStream(outUri!!, "w")?.use { output -> input.copyTo(output) } ?: throw IllegalStateException("نوشتن فایل مقصد ناموفق بود") } ?: throw IllegalStateException("خواندن فایل اصلی ناموفق بود")
-                val done = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }; contentResolver.update(outUri!!, done, null, null)
-                runOnUiThread { statusText.text = "نسخهٔ اصلی بدون تغییر کدک در Movies/EVEW ذخیره شد"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
-            } catch (e: Exception) {
-                outUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) { } }
-                runOnUiThread { statusText.text = "خروجی Ori ناموفق بود: ${e.message}"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+    /** Original Codecs exports only the selected storyboard cells or edited timeline cuts.
+     *  FFmpeg is instructed to stream-copy every mapped track (-c copy); no encoder is invoked.
+     */
+    private fun exportOriginalCodecSelections() {
+        val source = selectedUri
+        if (source == null || videoDurationMs <= 0L) {
+            Toast.makeText(this, "ابتدا یک ویدیوی معتبر انتخاب کنید", Toast.LENGTH_LONG).show()
+            return
+        }
+        val hasStoryboard = selectedFrames.any { it in 0 until activeStoryboardFrameCount && it !in deletedStoryboardFrames }
+        val hasTimeline = selectedTimelineRange != null || timelineSplitPoints.isNotEmpty() || deletedTimelineRanges.isNotEmpty()
+        when {
+            hasStoryboard && hasTimeline -> AlertDialog.Builder(this)
+                .setTitle("Original Codecs")
+                .setItems(arrayOf("ذخیره اسلایدهای انتخاب‌شده در استوری‌بورد", "ذخیره برش‌های نوار زمان")) { _, which ->
+                    if (which == 0) exportSelectedStoryboardFramesSeparately(true)
+                    else if (selectedTimelineRange != null) exportOnlyTimelineRange(selectedTimelineRange!!, true)
+                    else if (timelineSplitPoints.isNotEmpty()) exportTimelineSegmentsSeparately(true)
+                    else exportTimelineEditedVideo(true)
+                }.setNegativeButton("انصراف", null).show()
+            hasStoryboard -> exportSelectedStoryboardFramesSeparately(true)
+            hasTimeline && selectedTimelineRange != null -> exportOnlyTimelineRange(selectedTimelineRange!!, true)
+            hasTimeline && timelineSplitPoints.isNotEmpty() -> exportTimelineSegmentsSeparately(true)
+            hasTimeline -> exportTimelineEditedVideo(true)
+            else -> Toast.makeText(this, "ابتدا اسلایدهای استوری‌بورد را انتخاب کنید یا روی نوار زمان Cut بزنید", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Keep the source container and codec family for Original Codecs stream-copy exports. */
+    private fun sourceCodecContainer(source: Uri? = selectedUri): Pair<String, String> {
+        val name = source?.let { displayNameForUri(it) }.orEmpty()
+        val ext = name.substringAfterLast('.', "mp4").lowercase(java.util.Locale.ROOT)
+        return when (ext) {
+            "mp4", "m4v", "3gp", "3g2", "mkv", "mka", "webm", "avi", "mov", "ts", "mts", "mpg", "mpeg" -> when (ext) {
+                "mp4", "m4v" -> "mp4" to "video/mp4"
+                "3gp" -> "3gp" to "video/3gpp"
+                "3g2" -> "3g2" to "video/3gpp2"
+                "mkv", "mka" -> "mkv" to "video/x-matroska"
+                "webm" -> "webm" to "video/webm"
+                "avi" -> "avi" to "video/x-msvideo"
+                "mov" -> "mov" to "video/quicktime"
+                "ts", "mts" -> "ts" to "video/mp2t"
+                "mpg", "mpeg" -> "mpeg" to "video/mpeg"
+                else -> "mp4" to "video/mp4"
             }
-        }.start()
+            else -> throw IllegalStateException("قالب فایل اصلی شناسایی نشد؛ برای جلوگیری از تغییر ظرف/کدک، خروجی Original Codecs متوقف شد")
+        }
+    }
+
+    private fun muxSourceCodecRanges(source: Uri, ranges: List<Pair<Long, Long>>, gapBetweenRangesMs: Long = 0L): File {
+        val (extension, _) = sourceCodecContainer(source)
+        val stamp = System.currentTimeMillis()
+        val input = File(cacheDir, "evew_codec_source_$stamp.bin")
+        val segments = mutableListOf<File>()
+        val concatList = File(cacheDir, "evew_codec_concat_$stamp.txt")
+        val output = File(cacheDir, "evew_original_codec_$stamp.$extension")
+        val format = when (extension) {
+            "mkv" -> "matroska"
+            "ts" -> "mpegts"
+            "mpeg" -> "mpeg"
+            else -> extension
+        }
+        try {
+            contentResolver.openInputStream(source)?.use { src -> input.outputStream().use { dst -> src.copyTo(dst) } }
+                ?: throw IllegalStateException("خواندن ویدیوی اصلی ممکن نشد")
+            if (input.length() == 0L) throw IllegalStateException("فایل ورودی خالی است")
+            ranges.filter { it.second > it.first }.forEachIndexed { index, range ->
+                val segment = File(cacheDir, "evew_codec_part_${stamp}_$index.$extension")
+                val start = range.first.coerceAtLeast(0L) / 1000.0
+                val duration = (range.second - range.first).coerceAtLeast(0L) / 1000.0
+                if (duration <= 0.0) return@forEachIndexed
+                val args = arrayOf(
+                    "-y", "-ss", String.format(java.util.Locale.US, "%.3f", start),
+                    "-i", input.absolutePath, "-t", String.format(java.util.Locale.US, "%.3f", duration),
+                    "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero",
+                    "-max_muxing_queue_size", "2048", "-f", format, segment.absolutePath
+                )
+                val session = FFmpegKit.executeWithArguments(args)
+                if (!ReturnCode.isSuccess(session.returnCode) || !segment.exists() || segment.length() == 0L)
+                    throw IllegalStateException("برش بدون تغییر کدک ناموفق بود: ${session.allLogsAsString.takeLast(700)}")
+                segments.add(segment)
+            }
+            if (segments.isEmpty()) throw IllegalStateException("هیچ بازهٔ معتبری برای ذخیره وجود ندارد")
+            // Extend each selected run's declared duration (except the last) to create
+            // an intentional timestamp gap without decoding or re-encoding any stream.
+            val concatEntries = segments.mapIndexed { index, segment ->
+                val fileLine = "file '${segment.absolutePath.replace("'", "'\\''")}'"
+                if (gapBetweenRangesMs > 0L && index < segments.lastIndex) {
+                    val sourceDurationSeconds = ranges[index].let { (it.second - it.first).coerceAtLeast(0L) } / 1000.0
+                    val extendedDuration = sourceDurationSeconds + gapBetweenRangesMs / 1000.0
+                    "$fileLine\nduration " + String.format(java.util.Locale.US, "%.3f", extendedDuration)
+                } else fileLine
+            }
+            concatList.writeText(concatEntries.joinToString("\n") + "\n")
+            val concatArgs = arrayOf("-y", "-f", "concat", "-safe", "0", "-i", concatList.absolutePath,
+                "-map", "0", "-c", "copy", "-max_muxing_queue_size", "2048", "-f", format, output.absolutePath)
+            val concat = FFmpegKit.executeWithArguments(concatArgs)
+            if (!ReturnCode.isSuccess(concat.returnCode) || !output.exists() || output.length() == 0L)
+                throw IllegalStateException("ترکیب بازه‌ها با کدک اصلی ناموفق بود: ${concat.allLogsAsString.takeLast(700)}")
+            return output
+        } catch (e: Exception) {
+            output.delete()
+            throw e
+        } finally {
+            input.delete(); concatList.delete(); segments.forEach { it.delete() }
+        }
     }
 
     /** Split the original into separate stream-copy files by count or by interval. */
@@ -5226,7 +5324,7 @@ class MainActivity : Activity() {
 
 
 
-    private fun exportOnlyTimelineRange(range: Pair<Long, Long>) {
+    private fun exportOnlyTimelineRange(range: Pair<Long, Long>, preserveSourceCodec: Boolean = false) {
         val source = selectedUri
         if (source == null || videoDurationMs <= 0L) {
             Toast.makeText(this, "ابتدا یک ویدیوی معتبر انتخاب کنید", Toast.LENGTH_SHORT).show(); return
@@ -5240,7 +5338,7 @@ class MainActivity : Activity() {
         worker.execute {
             var result: File? = null
             var error: String? = null
-            try { result = muxRemainingRanges(source, listOf(start to end)) }
+            try { result = if (preserveSourceCodec) muxSourceCodecRanges(source, listOf(start to end)) else muxRemainingRanges(source, listOf(start to end)) }
             catch (e: Exception) { error = e.message ?: e.javaClass.simpleName }
             mainHandler.post {
                 button.isEnabled = true
@@ -5251,10 +5349,10 @@ class MainActivity : Activity() {
                 }
                 try {
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_timeline_${System.currentTimeMillis()}", outputExtension()))
-                        put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_timeline_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
+                        put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
@@ -5267,7 +5365,7 @@ class MainActivity : Activity() {
                     file.delete()
                     selectedTimelineRange = null
                     restoreNormalStoryboardAfterExport()
-                    statusText.text = "فقط بازهٔ انتخاب‌شده در Movies/EVC ذخیره شد؛ تنظیمات استوری‌بورد و حذف‌ها دخالت داده نشدند"
+                    statusText.text = if (preserveSourceCodec) "فقط بازهٔ انتخاب‌شده با حفظ کدک اصلی در Movies/EVEW ذخیره شد" else "فقط بازهٔ انتخاب‌شده در Movies/EVC ذخیره شد؛ تنظیمات استوری‌بورد و حذف‌ها دخالت داده نشدند"
                     Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     statusText.text = "ذخیرهٔ فایل ناموفق بود: ${e.message ?: "خطا"}"
@@ -5281,7 +5379,7 @@ class MainActivity : Activity() {
      *  The intervals are built from the storyboard's active start/end range, not the full video.
      *  No complement/remaining-video ranges are ever added to this export.
      */
-    private fun exportSelectedStoryboardFramesSeparately() {
+    private fun exportSelectedStoryboardFramesSeparately(preserveSourceCodec: Boolean = false) {
         val source = selectedUri
         if (source == null || videoDurationMs <= 0L) {
             Toast.makeText(this, "ابتدا یک ویدیوی معتبر انتخاب کنید", Toast.LENGTH_SHORT).show()
@@ -5351,12 +5449,12 @@ class MainActivity : Activity() {
             var outUri: Uri? = null
             var error: String? = null
             try {
-                temp = muxRemainingRanges(source, normalizedSelectedRanges)
+                temp = if (preserveSourceCodec) muxSourceCodecRanges(source, normalizedSelectedRanges, gapBetweenRangesMs = 500L) else muxRemainingRanges(source, normalizedSelectedRanges)
                 val values = ContentValues().apply {
-                    put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_selected_storyboard_${System.currentTimeMillis()}", outputExtension()))
-                    put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
+                    put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_selected_storyboard_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
+                    put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                     if (android.os.Build.VERSION.SDK_INT >= 29) {
-                        put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                        put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
                         put(MediaStore.Video.Media.IS_PENDING, 1)
                     }
                 }
@@ -5381,7 +5479,7 @@ class MainActivity : Activity() {
                 button.isEnabled = true
                 if (error == null && outUri != null) {
                     restoreNormalStoryboardAfterExport()
-                    statusText.text = "فقط ${normalizedSelectedRanges.size} بازهٔ پیوستهٔ انتخاب‌شده در یک فایل ذخیره شد؛ بازه‌های انتخاب‌نشده وارد خروجی نشدند"
+                    statusText.text = "بازه‌های انتخاب‌شده در یک فایل ذخیره شدند؛ بین هر دو بخش جداشده از استوری‌بورد حدود ۰٫۵ ثانیه مکث ایجاد شد و کدک اصلی بدون رمزگذاری مجدد حفظ شد"
                 } else {
                     statusText.text = "خروجی اسلایدهای انتخاب‌شده ناموفق بود: ${error ?: "خطای ناشناخته"}"
                 }

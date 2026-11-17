@@ -27,7 +27,7 @@
 - مسیر فایل آن دقیقاً .github/workflows/android.yml است.
 - تریگر Push و Pull Request برای همه شاخه‌ها فعال است و اجرا فقط به main یا master محدود نیست.
 - اجرای دستی نیز با workflow_dispatch فعال است.
-- خروجی APK در Artifact با نام EVEW-0.2.191-ARM32-debug-apk قرار می‌گیرد.
+- نام ثابت Artifact در فایل Workflow هنوز EVEW-0.2.191-ARM32-debug-apk است؛ فایل YAML عمداً تغییر داده نشده است. نسخه داخلی برنامه 0.2.193 است.
 
 ۵) اگر Commit یا Actions ظاهر نشد
 - در MGit بررسی کنید Commit واقعاً ثبت شده باشد و فایل‌ها در حالت Stage/Commit باقی نمانده باشند.
