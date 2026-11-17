@@ -2,32 +2,26 @@
 
 - **Repository / Gradle root:** `EVEW`
 - **Android app label:** `EVEW`
-- **Application ID / namespace:** `com.evew.app` (preserved)
-- **Version:** `0.2.197` (`versionCode 396`)
+- **Application ID / namespace / Kotlin package:** `com.evew.app`
+- **Version:** `0.2.199` (`versionCode 398`)
 - **Minimum Android:** API 24
 - **Target / Compile SDK:** 35
 - **Target ABI:** `armeabi-v7a` (32-bit ARM)
+
+## Project structure and separation
+
+All Kotlin sources are under `app/src/main/java/com/evew/app/`. No legacy `com/evc/app` source directory is included. The app ID and namespace remain `com.evew.app`; output storage and temporary-file naming remain EVEW-specific. The app does not generate `_Info.txt` in Download.
 
 ## GitHub Actions / MGit
 
 Workflow: `.github/workflows/android.yml`
 
-- Push and pull-request triggers cover **all branches** (`branches: ["**"]`).
-- Manual execution is enabled with `workflow_dispatch`.
-- Uses JDK 17, Android SDK 35 / Build Tools 35.0.0, and Gradle 8.9.
-- Builds the debug APK. The existing workflow artifact label remains `EVEW-0.2.191-ARM32-debug-apk`; the workflow YAML was intentionally left unchanged.
-- The workflow file is included in this ZIP. Make sure the hidden `.github` folder is staged in the first Commit.
+The existing workflow file is included **unchanged**. It uses JDK 17, Android SDK 35 / Build Tools 35.0.0, and Gradle 8.9. Push and pull-request triggers cover all branches, and manual execution is enabled. The existing artifact label in the workflow has not been edited.
 
 ## Fresh repository setup
 
-This ZIP intentionally contains **no `.git` directory, Git history, or configured remote**. Extract the archive and open the `EVEW` folder itself in MGit (not its parent and not an extra nested folder). Initialize a new local repository, stage all files including hidden files/folders, then create the first Commit. Create an empty GitHub repository named `EVEW`, add its HTTPS URL as the remote in MGit, and Push the branch.
-
-If the Actions workflow does not start, first verify on GitHub that `.github/workflows/android.yml` exists in the pushed branch and that the first Commit included it. The workflow is not restricted to `main` or `master`.
-
-## Independent Android identity
-
-The `applicationId`, namespace, and source package are `com.evew.app`, isolated from the EVC project so both apps can be installed independently.
+This ZIP contains no `.git` directory, Git history, or configured remote. Extract the archive and open the `EVEW` folder itself in MGit. Initialize the repository, stage all files including the hidden `.github` folder, commit, then configure the intended GitHub remote and push.
 
 ## Verification status
 
-The archive structure, project metadata, workflow triggers, and documentation/artifact naming were checked. A full Gradle build and on-device test have not been run in this packaging environment; GitHub Actions must confirm compilation and APK generation.
+The archive was checked for a single current Kotlin source location, package/namespace consistency, absence of legacy `com/evc/app` paths, and duplicate file contents. A full Gradle build and on-device test have **not** been run in this packaging environment; GitHub Actions must confirm compilation and APK generation.
