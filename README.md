@@ -3,7 +3,7 @@
 - **Repository / Gradle root:** `EVEW`
 - **Android app label:** `EVeditor`
 - **Application ID / namespace:** `com.evc.app` (preserved)
-- **Version:** `0.2.191` (`versionCode 391`)
+- **Version:** `0.2.192` (`versionCode 392`)
 - **Minimum Android:** API 24
 - **Target / Compile SDK:** 35
 - **Target ABI:** `armeabi-v7a` (32-bit ARM)
@@ -15,7 +15,7 @@ Workflow: `.github/workflows/android.yml`
 - Push and pull-request triggers cover **all branches** (`branches: ["**"]`).
 - Manual execution is enabled with `workflow_dispatch`.
 - Uses JDK 17, Android SDK 35 / Build Tools 35.0.0, and Gradle 8.9.
-- Builds the debug APK and uploads the artifact `EVEW-0.2.191-ARM32-debug-apk`.
+- Builds the debug APK and uploads the artifact `EVEW-0.2.192-ARM32-debug-apk`.
 - The workflow file is included in this ZIP. Make sure the hidden `.github` folder is staged in the first Commit.
 
 ## Fresh repository setup

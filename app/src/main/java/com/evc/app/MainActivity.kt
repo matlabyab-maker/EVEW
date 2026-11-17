@@ -14,6 +14,7 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
+import android.media.AudioManager
 import android.graphics.SurfaceTexture
 import android.view.TextureView
 import android.view.Surface
@@ -120,9 +121,9 @@ class MainActivity : Activity() {
         if (!suppressStoryboardAutoApply && selectedUri != null) applyStoryboardTimeRange()
     }
     private val worker = Executors.newSingleThreadExecutor()
-    // Decode storyboard thumbnails with six parallel workers; each worker owns its MediaMetadataRetriever.
-    // This increases frame extraction throughput while keeping decoder instances isolated.
-    private val storyboardFrameWorkers = Executors.newFixedThreadPool(6)
+    // Decode storyboard thumbnails with five parallel workers; each worker owns its MediaMetadataRetriever.
+    // Five evenly available workers keep extraction parallel without overloading mobile decoders.
+    private val storyboardFrameWorkers = Executors.newFixedThreadPool(5)
     // Keep timeline sampling independent so storyboard frames and the timeline do not share a decoder.
     private val timelineThumbnailWorker = Executors.newSingleThreadExecutor()
     private val selectedFrames = linkedSetOf<Int>()
@@ -166,10 +167,16 @@ class MainActivity : Activity() {
     private val PICK_OVERLAY_VIDEO = 7309
     private val PICK_APPEND_VIDEOS = 7310
     private val PICK_TRACK_VIDEO = 7311
+    private val SAVE_AS_REQUEST = 7312
     private var overlayVideoUri: Uri? = null
     private lateinit var overlayVideoLayer: FrameLayout
     private lateinit var overlayPreviewTexture: TextureView
     private var overlayPreviewPlayer: MediaPlayer? = null
+    private var activeVideoMediaPlayer: MediaPlayer? = null
+    private var gestureStartY = 0f
+    private var gestureStartValue = 0f
+    private var activeGestureControl = 0 // 1 = brightness (left), 2 = volume (right)
+    private var gestureMoved = false
     private var overlayPreviewSurface: Surface? = null
     private var overlayPreviewVideoWidth = 16
     private var overlayPreviewVideoHeight = 9
@@ -799,6 +806,7 @@ class MainActivity : Activity() {
         controller.pivotY = 0f
         videoView.setMediaController(controller)
         videoView.setOnPreparedListener { mediaPlayer ->
+            activeVideoMediaPlayer = mediaPlayer
             emptyHint.visibility = View.GONE
             playerColorPreview.visibility = View.GONE
             // Match the visible preview area to the source video's aspect ratio and center it.
@@ -826,6 +834,7 @@ class MainActivity : Activity() {
             emptyHint.visibility = View.VISIBLE
             true
         }
+        installPlayerBrightnessVolumeGestures(controller)
         buildEmptyStoryboard()
         updateModeButtons()
         handleIncomingVideoIntent(intent)
@@ -1066,7 +1075,21 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK || data == null) return
-        if (requestCode == PICK_APPEND_VIDEOS) {
+        if (requestCode == SAVE_AS_REQUEST) {
+            val destination = data.data ?: return
+            val source = selectedUri ?: return
+            Thread {
+                try {
+                    contentResolver.openInputStream(source)?.use { input ->
+                        contentResolver.openOutputStream(destination, "w")?.use { output -> input.copyTo(output) }
+                            ?: throw IllegalStateException("مسیر مقصد برای نوشتن باز نشد")
+                    } ?: throw IllegalStateException("خواندن ویدیوی اصلی ناموفق بود")
+                    runOnUiThread { statusText.text = "نسخهٔ اصلی بدون تغییر در مسیر انتخابی ذخیره شد (Save As)"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+                } catch (e: Exception) {
+                    runOnUiThread { statusText.text = "Save As ناموفق بود: ${e.message}"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+                }
+            }.start()
+        } else if (requestCode == PICK_APPEND_VIDEOS) {
             val base = selectedUri
             if (base == null) {
                 Toast.makeText(this, "ابتدا ویدیوی اصلی را انتخاب کنید", Toast.LENGTH_LONG).show()
@@ -4598,6 +4621,21 @@ class MainActivity : Activity() {
         nameOption.setOnCheckedChangeListener { _, checked -> nameValue.visibility = if (checked) View.VISIBLE else View.GONE }
         tagOption.setOnCheckedChangeListener { _, checked -> tagValue.visibility = if (checked) View.VISIBLE else View.GONE }
 
+        val actionsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(10), 0, dp(4)) }
+        fun actionButton(label: String, action: () -> Unit) = Button(this).apply {
+            text = label; textSize = 11f; isAllCaps = false; setPadding(dp(3), 0, dp(3), 0)
+            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(2), 0, dp(2), 0) }
+            setOnClickListener { action() }
+        }
+        actionsRow.addView(actionButton("Splits") { showOriginalSplitDialog() })
+        actionsRow.addView(actionButton("Save As") { launchSaveAs() })
+        actionsRow.addView(actionButton("Ori") { exportOriginalCopy() })
+        actionsRow.addView(actionButton("Original Codecs") {
+            Toast.makeText(this, "حالت حفظ کدک اصلی: بخش‌های بدون افکت با Stream Copy حفظ می‌شوند؛ افکت‌هایی که نیازمند فیلتر هستند دوباره رمزگذاری می‌شوند.", Toast.LENGTH_LONG).show()
+            exportCombinedChanges()
+        })
+        panel.addView(actionsRow)
+
         AlertDialog.Builder(this)
             .setTitle("تنظیمات خروجی هوشمند")
             .setView(panel)
@@ -4612,6 +4650,130 @@ class MainActivity : Activity() {
                 exportCombinedChanges()
             }
             .show()
+    }
+
+    private fun launchSaveAs() {
+        val source = selectedUri
+        if (source == null) { Toast.makeText(this, "ابتدا ویدیوی اصلی را انتخاب کنید", Toast.LENGTH_LONG).show(); return }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE); type = "video/*"; putExtra(Intent.EXTRA_TITLE, displayNameForUri(source))
+        }
+        try { startActivityForResult(intent, SAVE_AS_REQUEST) } catch (e: Exception) {
+            Toast.makeText(this, "باز کردن پنجرهٔ Save As ممکن نشد: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Ori: writes a byte-identical copy of the selected source into Movies/EVEW. */
+    private fun exportOriginalCopy() {
+        val source = selectedUri ?: run { Toast.makeText(this, "ابتدا ویدیوی اصلی را انتخاب کنید", Toast.LENGTH_LONG).show(); return }
+        statusText.text = "در حال ذخیرهٔ نسخهٔ اصلی بدون رمزگذاری مجدد…"
+        Thread {
+            var outUri: Uri? = null
+            try {
+                val name = displayNameForUri(source).substringBeforeLast('.', displayNameForUri(source)) + "_Ori." + displayNameForUri(source).substringAfterLast('.', "mp4")
+                val values = ContentValues().apply { put(MediaStore.Video.Media.DISPLAY_NAME, name); put(MediaStore.Video.Media.MIME_TYPE, if (name.endsWith(".mkv", true)) "video/x-matroska" else "video/mp4"); put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/EVEW"); put(MediaStore.Video.Media.IS_PENDING, 1) }
+                outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("ساخت فایل مقصد ناموفق بود")
+                contentResolver.openInputStream(source)?.use { input -> contentResolver.openOutputStream(outUri!!, "w")?.use { output -> input.copyTo(output) } ?: throw IllegalStateException("نوشتن فایل مقصد ناموفق بود") } ?: throw IllegalStateException("خواندن فایل اصلی ناموفق بود")
+                val done = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }; contentResolver.update(outUri!!, done, null, null)
+                runOnUiThread { statusText.text = "نسخهٔ اصلی بدون تغییر کدک در Movies/EVEW ذخیره شد"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                outUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) { } }
+                runOnUiThread { statusText.text = "خروجی Ori ناموفق بود: ${e.message}"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    /** Split the original into separate stream-copy files by count or by interval. */
+    private fun showOriginalSplitDialog() {
+        val source = selectedUri ?: run { Toast.makeText(this, "ابتدا ویدیوی اصلی را انتخاب کنید", Toast.LENGTH_LONG).show(); return }
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(4)) }
+        val count = EditText(this).apply { hint = "تعداد قسمت‌ها (۲ تا ۱۰۰)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText("2") }
+        val seconds = EditText(this).apply { hint = "یا فاصلهٔ هر قسمت بر حسب ثانیه (اختیاری)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL }
+        layout.addView(count); layout.addView(seconds)
+        AlertDialog.Builder(this).setTitle("Splits • تقسیم بدون تغییر کدک")
+            .setMessage("یکی از دو روش را وارد کنید: تعداد قسمت‌ها یا فاصلهٔ زمانی هر قسمت. تمام ترک‌های صوتی/تصویری با Stream Copy نگه داشته می‌شوند.")
+            .setView(layout).setNegativeButton("انصراف", null).setPositiveButton("شروع تقسیم") { _, _ ->
+                val n = count.text.toString().toIntOrNull()?.coerceIn(2, 100) ?: 2
+                val interval = seconds.text.toString().toDoubleOrNull()?.takeIf { it > 0.0 }
+                splitOriginalVideo(source, n, interval)
+            }.show()
+    }
+
+    private fun splitOriginalVideo(source: Uri, count: Int, intervalSeconds: Double?) {
+        statusText.text = "در حال آماده‌سازی تقسیم ویدیو…"
+        Thread {
+            val tempFiles = mutableListOf<File>()
+            try {
+                val input = copyUriToCache(source, "evew_split_input")
+                val duration = MediaMetadataRetriever().run {
+                    try { setDataSource(input.absolutePath); extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L } finally { release() }
+                }
+                if (duration <= 0L) throw IllegalStateException("مدت ویدیو خوانده نشد")
+                val segmentSeconds = intervalSeconds ?: (duration / 1000.0 / count)
+                if (segmentSeconds <= 0.0) throw IllegalArgumentException("فاصلهٔ تقسیم نامعتبر است")
+                val pattern = File(cacheDir, "evew_split_${System.currentTimeMillis()}_%03d.${input.extension.ifBlank { "mp4" }}")
+                val command = "-y -i ${shellQuote(input.absolutePath)} -map 0 -c copy -f segment -segment_time ${segmentSeconds} -reset_timestamps 1 ${shellQuote(pattern.absolutePath)}"
+                val session = FFmpegKit.execute(command)
+                if (!ReturnCode.isSuccess(session.returnCode)) throw IllegalStateException(session.failStackTrace ?: "تقسیم با FFmpeg ناموفق بود")
+                val files = cacheDir.listFiles()?.filter { it.name.startsWith(pattern.nameWithoutExtension.substringBeforeLast("_%03d")) && it.length() > 0L }?.sortedBy { it.name } ?: emptyList()
+                if (files.isEmpty()) throw IllegalStateException("هیچ قسمت خروجی ساخته نشد")
+                tempFiles.addAll(files)
+                files.forEachIndexed { index, file ->
+                    val values = ContentValues().apply { put(MediaStore.Video.Media.DISPLAY_NAME, "EVEW_Split_${index + 1}.${file.extension}"); put(MediaStore.Video.Media.MIME_TYPE, if (file.extension.equals("mkv", true)) "video/x-matroska" else "video/mp4"); put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/EVEW"); put(MediaStore.Video.Media.IS_PENDING, 1) }
+                    val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("ذخیرهٔ قسمت ${index + 1} ناموفق بود")
+                    file.inputStream().use { inputStream -> contentResolver.openOutputStream(uri, "w")?.use { output -> inputStream.copyTo(output) } ?: throw IllegalStateException("نوشتن قسمت ${index + 1} ناموفق بود") }
+                    contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+                }
+                runOnUiThread { statusText.text = "${files.size} قسمت در Movies/EVEW ذخیره شد؛ کدک‌ها و ترک‌ها با Stream Copy حفظ شدند."; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                runOnUiThread { statusText.text = "تقسیم ویدیو ناموفق بود: ${e.message}"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
+            } finally { tempFiles.forEach { it.delete() } }
+        }.start()
+    }
+
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+
+    private fun installPlayerBrightnessVolumeGestures(controller: MediaController) {
+        videoView.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    gestureStartY = event.y; gestureMoved = false
+                    activeGestureControl = if (event.x < view.width / 2f) 1 else 2
+                    gestureStartValue = if (activeGestureControl == 1) {
+                        val current = window.attributes.screenBrightness
+                        if (current < 0f) 0.5f else current
+                    } else {
+                        val manager = getSystemService(AUDIO_SERVICE) as AudioManager
+                        manager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = gestureStartY - event.y
+                    if (kotlin.math.abs(dy) > dp(12)) {
+                        gestureMoved = true
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                        if (activeGestureControl == 1) {
+                            val attrs = window.attributes
+                            attrs.screenBrightness = (gestureStartValue + dy / view.height.coerceAtLeast(1) * 1.4f).coerceIn(0.02f, 1f)
+                            window.attributes = attrs
+                            statusText.text = "نور صفحه: ${(attrs.screenBrightness * 100).toInt()}٪"
+                        } else {
+                            val manager = getSystemService(AUDIO_SERVICE) as AudioManager
+                            val max = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                            val next = (gestureStartValue + dy / view.height.coerceAtLeast(1) * max * 1.8f).toInt().coerceIn(0, max)
+                            manager.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
+                            statusText.text = "صدای پخش: ${next * 100 / max}٪"
+                        }
+                        true
+                    } else false
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (gestureMoved) { view.performClick(); true } else { controller.show(); true }
+                }
+                else -> false
+            }
+        }
     }
 
     /** Unified final export combining configured crop, color, text, overlay video, audio and subtitle. */
@@ -5511,6 +5673,7 @@ class MainActivity : Activity() {
         mainHandler.removeCallbacks(playbackSyncRunnable)
         mainHandler.removeCallbacks(storyboardAutoApplyRunnable)
         releaseOverlayPreviewPlayer()
+        activeVideoMediaPlayer = null
         worker.shutdownNow()
         frameBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         super.onDestroy()
