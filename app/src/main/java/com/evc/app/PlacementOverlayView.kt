@@ -1,4 +1,4 @@
-package com.evc.app
+package com.evew.app
 
 import android.content.Context
 import android.graphics.Canvas

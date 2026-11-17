@@ -1,4 +1,6 @@
-package com.evc.app
+package com.evew.app
+
+import com.evew.app.R
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -102,13 +104,14 @@ class MainActivity : Activity() {
     private lateinit var placementOverlay: PlacementOverlayView
     private var placementMode: PlacementOverlayView.Mode = PlacementOverlayView.Mode.NONE
     private lateinit var playerColorPreview: ImageView
+    private lateinit var playerBrightnessOverlay: View
+    private var playerBrightness = 1f
     private val previewBitmaps = mutableMapOf<Int, Bitmap>()
     private var playerPreviewRequest = 0
     private lateinit var statusText: TextView
     private lateinit var emptyHint: TextView
     private lateinit var storyboardRows: LinearLayout
     private lateinit var selectionText: TextView
-    private lateinit var timeModeButton: Button
     private var storyboardScaleDetector: android.view.ScaleGestureDetector? = null
     private var pendingStoryboardColumns: Int? = null
     private lateinit var timelineView: TimelineView
@@ -121,9 +124,9 @@ class MainActivity : Activity() {
         if (!suppressStoryboardAutoApply && selectedUri != null) applyStoryboardTimeRange()
     }
     private val worker = Executors.newSingleThreadExecutor()
-    // Decode storyboard thumbnails with three parallel workers; each worker owns its MediaMetadataRetriever.
-    // Three parallel workers balance extraction speed with mobile decoder and memory load.
-    private val storyboardFrameWorkers = Executors.newFixedThreadPool(3)
+    // Decode storyboard thumbnails with four parallel workers; each worker owns its MediaMetadataRetriever.
+    // Four independent decoders render separate storyboard segments concurrently.
+    private val storyboardFrameWorkers = Executors.newFixedThreadPool(4)
     // Keep timeline sampling independent so storyboard frames and the timeline do not share a decoder.
     private val timelineThumbnailWorker = Executors.newSingleThreadExecutor()
     private val selectedFrames = linkedSetOf<Int>()
@@ -383,6 +386,12 @@ class MainActivity : Activity() {
         }
         videoView = findViewById(R.id.videoView)
         val playerContainer = findViewById<FrameLayout>(R.id.playerContainer)
+        playerBrightnessOverlay = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = false
+            isFocusable = false
+        }
+        playerContainer.addView(playerBrightnessOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // A real second-video preview sits above the source video and below the crop/placement handles.
         overlayVideoLayer = FrameLayout(this)
         overlayVideoLayer.visibility = View.GONE
@@ -622,7 +631,6 @@ class MainActivity : Activity() {
             statusText.text = if (checked) "حالت انتخاب کاور روشن است؛ اسلاید دلخواه را لمس کنید تا تصویر شاخص خروجی شود." else "حالت انتخاب کاور خاموش شد؛ کاور پیش‌فرض ویدیو استفاده می‌شود."
             updateSelectionText()
         }
-        timeModeButton = findViewById(R.id.showTimelineButton)
         timelineView = findViewById(R.id.timelineView)
         trackTimelineView = findViewById(R.id.trackTimelineView)
         trackTimelineView.onClipSelected = { clip ->
@@ -783,17 +791,10 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.applyColorToSelectedButton).setOnClickListener { applyColorToSelectedFrames() }
         setupManualColorControls()
-        val timelinePanel = findViewById<View>(R.id.timelinePanel)
-        val timelineActionButtons = findViewById<View>(R.id.timelineActionButtons)
-        timeModeButton.setOnClickListener {
-            val show = timelinePanel.visibility != View.VISIBLE
-            if (show) recordUndoState()
-            timelinePanel.visibility = if (show) View.VISIBLE else View.GONE
-            timelineActionButtons.visibility = if (show) View.VISIBLE else View.GONE
-            findViewById<View>(R.id.storyboardTimeRangeRow).visibility = if (show) View.VISIBLE else View.GONE
-            timeModeButton.text = if (show) "بستن نوار زمان" else "نمایش نوار زمان"
-            if (show) timelinePanel.post { timelinePanel.requestLayout() }
-        }
+        // The legacy timeline editor is intentionally removed from the visible interface.
+        findViewById<View>(R.id.timelinePanel).visibility = View.GONE
+        findViewById<View>(R.id.timelineActionButtons).visibility = View.GONE
+        findViewById<View>(R.id.storyboardTimeRangeRow).visibility = View.GONE
         findViewById<Button>(R.id.pickStoryboardStartButton).setOnClickListener { setStoryboardTimeFromPlayback(true) }
         findViewById<Button>(R.id.pickStoryboardEndButton).setOnClickListener { setStoryboardTimeFromPlayback(false) }
 
@@ -836,7 +837,6 @@ class MainActivity : Activity() {
         }
         installPlayerBrightnessVolumeGestures(controller)
         buildEmptyStoryboard()
-        updateModeButtons()
         handleIncomingVideoIntent(intent)
     }
 
@@ -1324,7 +1324,7 @@ class MainActivity : Activity() {
         val button = findViewById<Button>(R.id.mergeButton)
         button.isEnabled = false
         statusText.text = "در حال ادغام ${sources.size} ویدیو…"
-        val output = File(cacheDir, "evc_merge_${System.currentTimeMillis()}.mp4")
+        val output = File(cacheDir, "evew_merge_${System.currentTimeMillis()}.mp4")
         try {
             val items = sources.map { uri -> EditedMediaItem.Builder(MediaItem.fromUri(uri)).build() }
             val sequence = EditedMediaItemSequence.Builder(items).build()
@@ -1334,21 +1334,21 @@ class MainActivity : Activity() {
                     activeTransformer = null
                     try {
                         val values = ContentValues().apply {
-                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_Merged_${System.currentTimeMillis()}", "mp4"))
+                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_Merged_${System.currentTimeMillis()}", "mp4"))
                             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                                 put(MediaStore.Video.Media.IS_PENDING, 1)
                             }
                         }
                         val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                            ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                            ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                         contentResolver.openOutputStream(outUri)?.use { out -> FileInputStream(output).use { it.copyTo(out) } }
                             ?: throw IllegalStateException("نوشتن فایل ادغام‌شده ناموفق بود")
                         if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(outUri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
-                        writeOutputInfoReport(outUri)
+                        
                         output.delete(); mergeUris.clear(); button.text = "Merge"; button.isEnabled = true
-                        statusText.text = "ویدیوها در Movies/EVC ادغام شدند"
+                        statusText.text = "ویدیوها در Movies/EVEW ادغام شدند"
                         Toast.makeText(this@MainActivity, "فایل ادغام‌شده ذخیره شد", Toast.LENGTH_LONG).show()
                     } catch (e: Exception) { output.delete(); button.isEnabled = true; statusText.text = "ذخیرهٔ Merge ناموفق بود: ${e.message}" }
                 }
@@ -1560,7 +1560,7 @@ class MainActivity : Activity() {
         val button = findViewById<Button>(R.id.outputChangesButton)
         button.isEnabled = false
         statusText.text = "در حال ساخت خروجی با اعمال تغییرات رنگ و حجم هدف؛ رمزگذاری مجدد انجام می‌شود…"
-        val output = File(cacheDir, "evc_colorized_${System.currentTimeMillis()}.mp4")
+        val output = File(cacheDir, "evew_colorized_${System.currentTimeMillis()}.mp4")
         try {
             val total = activeStoryboardFrameCount
             val rangeStart = storyboardStartMs.coerceIn(0L, videoDurationMs)
@@ -1609,24 +1609,24 @@ class MainActivity : Activity() {
                         button.isEnabled = true
                         try {
                             val values = ContentValues().apply {
-                                put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_colored_intervals_${System.currentTimeMillis()}", "mp4"))
+                                put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_colored_intervals_${System.currentTimeMillis()}", "mp4"))
                                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                                 if (android.os.Build.VERSION.SDK_INT >= 29) {
-                                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                                     put(MediaStore.Video.Media.IS_PENDING, 1)
                                 }
                             }
                             val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                                ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                                ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                             contentResolver.openOutputStream(outUri)?.use { out -> FileInputStream(output).use { it.copyTo(out) } }
                                 ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                             if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(outUri, ContentValues().apply {
                                 put(MediaStore.Video.Media.IS_PENDING, 0)
                             }, null, null)
-                            writeOutputInfoReport(outUri)
+                            
                             output.delete()
                     restoreNormalStoryboardAfterExport()
-                            statusText.text = "فقط ${intervals.size} بازهٔ دارای تنظیم رنگ در Movies/EVC ذخیره شد؛ حجم هدف حدود ${targetMb} MB بود و رمزگذاری مجدد انجام شد."
+                            statusText.text = "فقط ${intervals.size} بازهٔ دارای تنظیم رنگ در Movies/EVEW ذخیره شد؛ حجم هدف حدود ${targetMb} MB بود و رمزگذاری مجدد انجام شد."
                             Toast.makeText(this@MainActivity, "فقط بازه‌های رنگ‌گذاری‌شده ذخیره شدند؛ حجم نهایی ممکن است با هدف تفاوت داشته باشد", Toast.LENGTH_LONG).show()
                         } catch (e: Exception) {
                             output.delete(); statusText.text = "ذخیرهٔ خروجی ناموفق بود: ${e.message ?: "خطا"}"
@@ -2443,14 +2443,14 @@ class MainActivity : Activity() {
             var output: File? = null
             var error: String? = null
             try {
-                val sourceFile = copyUriToCache(sourceUri, "evc_tracks_source")
+                val sourceFile = copyUriToCache(sourceUri, "evew_tracks_source")
                 tempFiles.add(sourceFile)
                 val audioClips = clips.filter { it.kind == TrackClipKind.AUDIO }
                 val subtitleClips = clips.filter { it.kind == TrackClipKind.SUBTITLE }
-                val audioFiles = audioClips.map { clip -> copyUriToCache(clip.uri, "evc_timeline_audio").also { tempFiles.add(it) } }
-                val videoFiles = videoClips.map { clip -> copyUriToCache(clip.uri, "evc_timeline_video").also { tempFiles.add(it) } }
-                val subtitleFiles = subtitleClips.map { clip -> copyUriToCache(clip.uri, "evc_timeline_subtitle").also { tempFiles.add(it) } }
-                val outputFile = File(cacheDir, "evc_timeline_tracks_${System.currentTimeMillis()}.${outputExtension()}")
+                val audioFiles = audioClips.map { clip -> copyUriToCache(clip.uri, "evew_timeline_audio").also { tempFiles.add(it) } }
+                val videoFiles = videoClips.map { clip -> copyUriToCache(clip.uri, "evew_timeline_video").also { tempFiles.add(it) } }
+                val subtitleFiles = subtitleClips.map { clip -> copyUriToCache(clip.uri, "evew_timeline_subtitle").also { tempFiles.add(it) } }
+                val outputFile = File(cacheDir, "evew_timeline_tracks_${System.currentTimeMillis()}.${outputExtension()}")
                 output = outputFile
 
                 val args = mutableListOf("-y", "-i", sourceFile.absolutePath)
@@ -2493,8 +2493,8 @@ class MainActivity : Activity() {
                 val filterParts = mutableListOf<String>()
                 var currentVideoLabel = "0:v:0"
                 if (videoClips.isNotEmpty()) {
-                    filterParts.add("[0:v:0]setpts=PTS-STARTPTS[evc_vbase0]")
-                    currentVideoLabel = "evc_vbase0"
+                    filterParts.add("[0:v:0]setpts=PTS-STARTPTS[evew_vbase0]")
+                    currentVideoLabel = "evew_vbase0"
                     val mainInputIndex = 1 + audioFiles.size
                     videoClips.forEachIndexed { index, clip ->
                         val inputIndex = mainInputIndex + index
@@ -2502,8 +2502,8 @@ class MainActivity : Activity() {
                         val duration = String.format(java.util.Locale.US, "%.3f", clip.durationMs / 1000.0)
                         val start = String.format(java.util.Locale.US, "%.3f", clip.startMs / 1000.0)
                         val end = String.format(java.util.Locale.US, "%.3f", (clip.startMs + clip.durationMs) / 1000.0)
-                        val clipLabel = "evc_vclip$index"
-                        val nextLabel = "evc_vbase${index + 1}"
+                        val clipLabel = "evew_vclip$index"
+                        val nextLabel = "evew_vbase${index + 1}"
                         // Each independent VIDEO clip is fitted inside a compact overlay tile.
                         // Four corner positions are cycled for simultaneous clips; later clips
                         // remain visible rather than replacing the main picture.
@@ -2517,16 +2517,16 @@ class MainActivity : Activity() {
 
                 val audioInputs = mutableListOf<String>()
                 if (sourceHasAudio) {
-                    filterParts.add("[0:a:0]asetpts=PTS-STARTPTS,volume=1[evc_orig]")
-                    audioInputs.add("[evc_orig]")
+                    filterParts.add("[0:a:0]asetpts=PTS-STARTPTS,volume=1[evew_orig]")
+                    audioInputs.add("[evew_orig]")
                 }
                 audioClips.forEachIndexed { index, clip ->
                     val inputIndex = 1 + index
                     val sourceStart = String.format(java.util.Locale.US, "%.3f", clip.sourceStartMs / 1000.0)
                     val duration = String.format(java.util.Locale.US, "%.3f", clip.durationMs / 1000.0)
                     val delay = clip.startMs.coerceAtLeast(0L)
-                    filterParts.add("[$inputIndex:a:0]atrim=start=$sourceStart:duration=$duration,asetpts=PTS-STARTPTS,adelay=${delay}|${delay}[evc_a$index]")
-                    audioInputs.add("[evc_a$index]")
+                    filterParts.add("[$inputIndex:a:0]atrim=start=$sourceStart:duration=$duration,asetpts=PTS-STARTPTS,adelay=${delay}|${delay}[evew_a$index]")
+                    audioInputs.add("[evew_a$index]")
                 }
                 videoClips.forEachIndexed { index, clip ->
                     if (videoHasAudio[index]) {
@@ -2534,25 +2534,25 @@ class MainActivity : Activity() {
                         val sourceStart = String.format(java.util.Locale.US, "%.3f", clip.sourceStartMs / 1000.0)
                         val duration = String.format(java.util.Locale.US, "%.3f", clip.durationMs / 1000.0)
                         val delay = clip.startMs.coerceAtLeast(0L)
-                        filterParts.add("[$inputIndex:a:0]atrim=start=$sourceStart:duration=$duration,asetpts=PTS-STARTPTS,adelay=${delay}|${delay}[evc_va$index]")
-                        audioInputs.add("[evc_va$index]")
+                        filterParts.add("[$inputIndex:a:0]atrim=start=$sourceStart:duration=$duration,asetpts=PTS-STARTPTS,adelay=${delay}|${delay}[evew_va$index]")
+                        audioInputs.add("[evew_va$index]")
                     }
                 }
                 val hasMixedAudio = audioInputs.isNotEmpty()
                 if (hasMixedAudio) {
-                    filterParts.add(audioInputs.joinToString("") + "amix=inputs=${audioInputs.size}:duration=longest:dropout_transition=0[evc_mix]")
+                    filterParts.add(audioInputs.joinToString("") + "amix=inputs=${audioInputs.size}:duration=longest:dropout_transition=0[evew_mix]")
                 }
 
                 if (videoClips.isNotEmpty()) {
                     args.addAll(listOf("-filter_complex", filterParts.joinToString(";"), "-map", "[$currentVideoLabel]"))
-                    if (hasMixedAudio) args.addAll(listOf("-map", "[evc_mix]"))
+                    if (hasMixedAudio) args.addAll(listOf("-map", "[evew_mix]"))
                     else if (sourceHasAudio) args.addAll(listOf("-map", "0:a?"))
                     args.addAll(listOf("-c:v", "mpeg4", "-q:v", "3", "-pix_fmt", "yuv420p"))
                     if (hasMixedAudio) args.addAll(listOf("-c:a", "aac", "-b:a", "192k"))
                     else if (sourceHasAudio) args.addAll(listOf("-c:a", "copy"))
                     else args.add("-an")
                 } else if (hasMixedAudio) {
-                    args.addAll(listOf("-filter_complex", filterParts.joinToString(";"), "-map", "0:v:0", "-map", "[evc_mix]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"))
+                    args.addAll(listOf("-filter_complex", filterParts.joinToString(";"), "-map", "0:v:0", "-map", "[evew_mix]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"))
                 } else {
                     args.addAll(listOf("-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", "copy"))
                 }
@@ -2580,18 +2580,18 @@ class MainActivity : Activity() {
                 try {
                     val ext = outputExtension()
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_Timeline_${System.currentTimeMillis()}", ext))
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_Timeline_${System.currentTimeMillis()}", ext))
                         put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
-                        if (android.os.Build.VERSION.SDK_INT >= 29) { put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC"); put(MediaStore.Video.Media.IS_PENDING, 1) }
+                        if (android.os.Build.VERSION.SDK_INT >= 29) { put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW"); put(MediaStore.Video.Media.IS_PENDING, 1) }
                     }
-                    val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("ساخت فایل در Movies/EVC ناموفق بود")
+                    val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ناموفق بود")
                     contentResolver.openOutputStream(uri)?.use { out -> FileInputStream(result).use { it.copyTo(out) } } ?: throw IllegalStateException("نوشتن خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
                     result.delete()
                     restoreNormalStoryboardAfterExport()
                     statusText.text = if (videoClips.isNotEmpty()) {
-                        "خروجی چندویدیویی در Movies/EVC ذخیره شد؛ ویدیوهای ترک VIDEO به‌صورت لایه‌های کوچک روی تصویر اصلی ترکیب شدند و صداهای موجود با هم میکس شدند."
-                    } else "خروجی نوار ترک‌ها در Movies/EVC ذخیره شد؛ کدک ویدیوی اصلی بدون رمزگذاری مجدد حفظ شد. صداهای افزوده‌شده با صدای اصلی ترکیب شدند."
+                        "خروجی چندویدیویی در Movies/EVEW ذخیره شد؛ ویدیوهای ترک VIDEO به‌صورت لایه‌های کوچک روی تصویر اصلی ترکیب شدند و صداهای موجود با هم میکس شدند."
+                    } else "خروجی نوار ترک‌ها در Movies/EVEW ذخیره شد؛ کدک ویدیوی اصلی بدون رمزگذاری مجدد حفظ شد. صداهای افزوده‌شده با صدای اصلی ترکیب شدند."
                     Toast.makeText(this, "خروجی نوار ترک‌ها ذخیره شد", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) { result.delete(); statusText.text = "ذخیره خروجی ناموفق بود: ${e.message}"; Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show() }
             }
@@ -2631,13 +2631,13 @@ class MainActivity : Activity() {
             var output: File? = null
             var error: String? = null
             try {
-                val videoInputFile = copyUriToCache(sourceUri, "evc_track_video")
+                val videoInputFile = copyUriToCache(sourceUri, "evew_track_video")
                 sourceFile = videoInputFile
-                val selectedAudioFile = if (audioUri != null) copyUriToCache(audioUri, "evc_track_audio") else null
+                val selectedAudioFile = if (audioUri != null) copyUriToCache(audioUri, "evew_track_audio") else null
                 audioFile = selectedAudioFile
-                val selectedSubtitleFile = if (subtitleUri != null) copyUriToCache(subtitleUri, "evc_track_subtitle") else null
+                val selectedSubtitleFile = if (subtitleUri != null) copyUriToCache(subtitleUri, "evew_track_subtitle") else null
                 subtitleFile = selectedSubtitleFile
-                val outputFile = File(cacheDir, "evc_tracks_${System.currentTimeMillis()}.${outputExtension()}")
+                val outputFile = File(cacheDir, "evew_tracks_${System.currentTimeMillis()}.${outputExtension()}")
                 output = outputFile
                 val args = mutableListOf("-y", "-i", videoInputFile.absolutePath)
                 var audioInputIndex: Int? = null
@@ -2686,15 +2686,15 @@ class MainActivity : Activity() {
                 try {
                     val ext = outputExtension()
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_tracks_${System.currentTimeMillis()}", ext))
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_tracks_${System.currentTimeMillis()}", ext))
                         put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
                     val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                        ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                     contentResolver.openOutputStream(outUri)?.use { stream -> FileInputStream(result).use { it.copyTo(stream) } }
                         ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -2702,8 +2702,8 @@ class MainActivity : Activity() {
                     }
                     result.delete()
                     restoreNormalStoryboardAfterExport()
-                    statusText.text = "خروجی همراه ترک‌های انتخابی در Movies/EVC ذخیره شد؛ ویدیو بدون رمزگذاری مجدد کپی شد"
-                    Toast.makeText(this, "خروجی در پوشهٔ Movies/EVC ذخیره شد", Toast.LENGTH_LONG).show()
+                    statusText.text = "خروجی همراه ترک‌های انتخابی در Movies/EVEW ذخیره شد؛ ویدیو بدون رمزگذاری مجدد کپی شد"
+                    Toast.makeText(this, "خروجی در پوشهٔ Movies/EVEW ذخیره شد", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     result.delete()
                     statusText.text = "ذخیرهٔ خروجی ناموفق بود: ${e.message ?: "خطا"}"
@@ -2730,9 +2730,9 @@ class MainActivity : Activity() {
             var output: File? = null
             var error: String? = null
             try {
-                sourceFile = copyUriToCache(sourceUri, "evc_mux_source")
-                audioFile = copyUriToCache(audioUri, "evc_mux_audio")
-                output = File(cacheDir, "evc_tracks_${System.currentTimeMillis()}.mp4")
+                sourceFile = copyUriToCache(sourceUri, "evew_mux_source")
+                audioFile = copyUriToCache(audioUri, "evew_mux_audio")
+                output = File(cacheDir, "evew_tracks_${System.currentTimeMillis()}.mp4")
                 val sourceExtractor = MediaExtractor()
                 val audioExtractor = MediaExtractor()
                 var muxer: MediaMuxer? = null
@@ -2744,7 +2744,7 @@ class MainActivity : Activity() {
                     // MediaMuxer. Some Android/vendor muxer implementations terminate the
                     // process in native code for unsupported MP4 track formats.
                     val sourceFormats = (0 until sourceExtractor.trackCount).map { sourceExtractor.getTrackFormat(it) }
-                    val allowedVideoMimes = setOf("video/avc", "video/hevc", "video/mp4v-es")
+                    val allowedVideoMimes = setOf("video/avc", "video/hevew", "video/mp4v-es")
                     val allowedAudioMimes = setOf("audio/mp4a-latm")
                     val unsupportedMp4Formats = sourceFormats.mapNotNull { format ->
                         val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
@@ -2871,15 +2871,15 @@ class MainActivity : Activity() {
                 }
                 try {
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_tracks_${System.currentTimeMillis()}", "mp4"))
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_tracks_${System.currentTimeMillis()}", "mp4"))
                         put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
                     val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                        ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                     contentResolver.openOutputStream(outUri)?.use { stream -> FileInputStream(result).use { it.copyTo(stream) } }
                         ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -2888,7 +2888,7 @@ class MainActivity : Activity() {
                     result.delete()
                     restoreNormalStoryboardAfterExport()
                     statusText.text = "ترک صوتی جدید به‌صورت جداگانه افزوده شد؛ صدای اصلی و ویدیو حفظ شدند و ویدیو دوباره رمزگذاری نشد."
-                    Toast.makeText(this, "خروجی در Movies/EVC ذخیره شد", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "خروجی در Movies/EVEW ذخیره شد", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     result.delete()
                     statusText.text = "ذخیرهٔ خروجی ناموفق بود: ${e.message ?: "خطا"}"
@@ -2906,7 +2906,7 @@ class MainActivity : Activity() {
         val button = findViewById<Button>(R.id.outputChangesButton)
         button.isEnabled = false
         statusText.text = "در حال ساخت خروجی صدا با موتور داخلی اندروید…"
-        val output = File(cacheDir, "evc_audio_${System.currentTimeMillis()}.mp4")
+        val output = File(cacheDir, "evew_audio_${System.currentTimeMillis()}.mp4")
         try {
             val videoEffects = mutableListOf<androidx.media3.common.Effect>()
             if (text.isNotEmpty()) {
@@ -2947,15 +2947,15 @@ class MainActivity : Activity() {
                     activeTransformer = null
                     try {
                         val values = ContentValues().apply {
-                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_audio_${System.currentTimeMillis()}", "mp4"))
+                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_audio_${System.currentTimeMillis()}", "mp4"))
                             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                                 put(MediaStore.Video.Media.IS_PENDING, 1)
                             }
                         }
                         val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                            ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                            ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                         contentResolver.openOutputStream(outUri)?.use { stream -> FileInputStream(output).use { it.copyTo(stream) } }
                             ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -2964,7 +2964,7 @@ class MainActivity : Activity() {
                         output.delete()
                         button.isEnabled = true
                     restoreNormalStoryboardAfterExport()
-                        statusText.text = if (text.isNotEmpty()) "متن و صدای انتخابی در Movies/EVC ذخیره شدند؛ صدای اصلی جایگزین شد." else "صدای انتخابی در Movies/EVC جایگزین صدای اصلی شد."
+                        statusText.text = if (text.isNotEmpty()) "متن و صدای انتخابی در Movies/EVEW ذخیره شدند؛ صدای اصلی جایگزین شد." else "صدای انتخابی در Movies/EVEW جایگزین صدای اصلی شد."
                         Toast.makeText(this@MainActivity, statusText.text, Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         output.delete(); button.isEnabled = true
@@ -2995,7 +2995,7 @@ class MainActivity : Activity() {
         val button = findViewById<Button>(R.id.outputChangesButton)
         button.isEnabled = false
         statusText.text = "در حال ساخت خروجی متن با موتور داخلی اندروید…"
-        val output = File(cacheDir, "evc_text_${System.currentTimeMillis()}.mp4")
+        val output = File(cacheDir, "evew_text_${System.currentTimeMillis()}.mp4")
         try {
             val styledText = SpannableString(text).apply {
                 if (isNotEmpty()) {
@@ -3022,15 +3022,15 @@ class MainActivity : Activity() {
                     activeTransformer = null
                     try {
                         val values = ContentValues().apply {
-                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_Text_${System.currentTimeMillis()}", "mp4"))
+                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_Text_${System.currentTimeMillis()}", "mp4"))
                             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                                 put(MediaStore.Video.Media.IS_PENDING, 1)
                             }
                         }
                         val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                            ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                            ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                         contentResolver.openOutputStream(outUri)?.use { stream -> FileInputStream(output).use { it.copyTo(stream) } }
                             ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -3041,7 +3041,7 @@ class MainActivity : Activity() {
                         output.delete()
                         button.isEnabled = true
                     restoreNormalStoryboardAfterExport()
-                        statusText.text = "متن روی ویدیو در Movies/EVC ذخیره شد."
+                        statusText.text = "متن روی ویدیو در Movies/EVEW ذخیره شد."
                         Toast.makeText(this@MainActivity, statusText.text, Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         output.delete(); button.isEnabled = true
@@ -3243,21 +3243,21 @@ class MainActivity : Activity() {
             var output: File? = null
             var error: String? = null
             try {
-                baseFile = copyUriToCache(sourceUri, "evc_overlay_base")
-                if (secondUri != null) overlayFile = copyUriToCache(secondUri, "evc_overlay_video")
-                if (audioUri != null) audioFile = copyUriToCache(audioUri, "evc_overlay_audio")
+                baseFile = copyUriToCache(sourceUri, "evew_overlay_base")
+                if (secondUri != null) overlayFile = copyUriToCache(secondUri, "evew_overlay_video")
+                if (audioUri != null) audioFile = copyUriToCache(audioUri, "evew_overlay_audio")
                 if (text.isNotEmpty()) {
-                    textFile = File(cacheDir, "evc_overlay_text_${System.currentTimeMillis()}.txt")
+                    textFile = File(cacheDir, "evew_overlay_text_${System.currentTimeMillis()}.txt")
                     textFile.writeText(text, Charsets.UTF_8)
                 }
                 val ext = outputExtension()
-                output = File(cacheDir, "evc_overlay_${System.currentTimeMillis()}.$ext")
+                output = File(cacheDir, "evew_overlay_${System.currentTimeMillis()}.$ext")
                 val graph = mutableListOf<String>()
                 var current = "0:v"
                 if (overlayFile != null) {
-                    graph.add("[1:v][0:v]scale2ref=w=main_w*$videoWidth/100:h=ow/mdar[evc_small][evc_base]")
-                    graph.add("[evc_base][evc_small]overlay=x='main_w*$videoX/100':y='main_h*$videoY/100':eof_action=pass[evc_with_video]")
-                    current = "evc_with_video"
+                    graph.add("[1:v][0:v]scale2ref=w=main_w*$videoWidth/100:h=ow/mdar[evew_small][evew_base]")
+                    graph.add("[evew_base][evew_small]overlay=x='main_w*$videoX/100':y='main_h*$videoY/100':eof_action=pass[evew_with_video]")
+                    current = "evew_with_video"
                 }
                 if (textFile != null) {
                     val safePath = textFile.absolutePath.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
@@ -3265,8 +3265,8 @@ class MainActivity : Activity() {
                     val endSeconds = ((textEndMs ?: videoDurationMs).toDouble() / 1000.0).let { String.format(java.util.Locale.US, "%.3f", it) }
                     val timingFilter = if (text.isNotEmpty()) ":enable='between(t\\,$startSeconds\\,$endSeconds)'" else ""
                     val draw = "drawtext=fontfile='/system/fonts/Roboto-Regular.ttf':textfile='$safePath':fontsize=$textSize:fontcolor=white:borderw=2:bordercolor=black:x='w*$textX/100':y='h*$textY/100'$timingFilter"
-                    graph.add("[$current]$draw[evc_text_out]")
-                    current = "evc_text_out"
+                    graph.add("[$current]$draw[evew_text_out]")
+                    current = "evew_text_out"
                 }
                 // Keep text/overlay encoding conservative on 32-bit ARM devices: one filter thread,
                 // one encoder thread, no look-ahead/MB-tree, and a single reference frame.
@@ -3328,15 +3328,15 @@ class MainActivity : Activity() {
                 try {
                     val ext = outputExtension()
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_overlay_${System.currentTimeMillis()}", ext))
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_overlay_${System.currentTimeMillis()}", ext))
                         put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
                     val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                        ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                     contentResolver.openOutputStream(outUri)?.use { stream -> FileInputStream(result).use { it.copyTo(stream) } }
                         ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -3345,15 +3345,15 @@ class MainActivity : Activity() {
                     result.delete()
                     restoreNormalStoryboardAfterExport()
                     statusText.text = when {
-                        audioUri != null && text.isNotEmpty() && secondUri != null -> "متن، ویدیوی رویی و صدای انتخابی در Movies/EVC ذخیره شدند؛ صدای انتخابی جای صدای اصلی را گرفت."
-                        audioUri != null && text.isNotEmpty() -> "متن و صدای انتخابی در Movies/EVC ذخیره شدند؛ صدای انتخابی جای صدای اصلی را گرفت."
-                        audioUri != null && secondUri != null -> "ویدیوی رویی و صدای انتخابی در Movies/EVC ذخیره شدند؛ صدای انتخابی جای صدای اصلی را گرفت."
-                        audioUri != null -> "ویدیو با صدای انتخابی در Movies/EVC ذخیره شد؛ صدای انتخابی جای صدای اصلی را گرفت."
-                        text.isNotEmpty() && secondUri != null -> "متن و ویدیوی رویی ترکیب و در Movies/EVC ذخیره شدند؛ ویدیو دوباره رمزگذاری شده است."
-                        text.isNotEmpty() -> "متن روی ویدیو در Movies/EVC ذخیره شد."
-                        else -> "ویدیوی رویی در Movies/EVC ذخیره شد."
+                        audioUri != null && text.isNotEmpty() && secondUri != null -> "متن، ویدیوی رویی و صدای انتخابی در Movies/EVEW ذخیره شدند؛ صدای انتخابی جای صدای اصلی را گرفت."
+                        audioUri != null && text.isNotEmpty() -> "متن و صدای انتخابی در Movies/EVEW ذخیره شدند؛ صدای انتخابی جای صدای اصلی را گرفت."
+                        audioUri != null && secondUri != null -> "ویدیوی رویی و صدای انتخابی در Movies/EVEW ذخیره شدند؛ صدای انتخابی جای صدای اصلی را گرفت."
+                        audioUri != null -> "ویدیو با صدای انتخابی در Movies/EVEW ذخیره شد؛ صدای انتخابی جای صدای اصلی را گرفت."
+                        text.isNotEmpty() && secondUri != null -> "متن و ویدیوی رویی ترکیب و در Movies/EVEW ذخیره شدند؛ ویدیو دوباره رمزگذاری شده است."
+                        text.isNotEmpty() -> "متن روی ویدیو در Movies/EVEW ذخیره شد."
+                        else -> "ویدیوی رویی در Movies/EVEW ذخیره شد."
                     }
-                    Toast.makeText(this, "خروجی در Movies/EVC ذخیره شد", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "خروجی در Movies/EVEW ذخیره شد", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     result.delete()
                     statusText.text = "ذخیرهٔ خروجی ناموفق بود: ${e.message ?: "خطا"}"
@@ -3507,7 +3507,6 @@ class MainActivity : Activity() {
         ).forEach { findViewById<View>(it)?.visibility = View.GONE }
         freeCropMode = false
         cropOverlay.visibility = View.GONE
-        if (::timeModeButton.isInitialized) timeModeButton.text = "نمایش نوار زمان"
 
         scroll.isFillViewport = true
         val storyboardFrame = findViewById<View>(R.id.storyboardTableFrame)
@@ -3736,11 +3735,11 @@ class MainActivity : Activity() {
                 val count = countForThisLoad
                 val rangeStart = storyboardStartMs.coerceIn(0L, duration)
                 val rangeEnd = (if (storyboardEndMs > rangeStart) storyboardEndMs else duration).coerceIn(rangeStart, duration)
-                // Split the storyboard into six contiguous segments to keep decoder seeks
+                // Split the storyboard into four contiguous segments to keep decoder seeks
                 // mostly local. Within each segment, decode the frame nearest the currently
                 // visible row first, then expand outward. This makes the on-screen cells appear
                 // sooner without making each decoder jump randomly across the whole video.
-                val workerCount = 6
+                val workerCount = 4
                 val completedWorkers = java.util.concurrent.atomic.AtomicInteger(0)
                 repeat(workerCount) { workerIndex ->
                     val segmentStart = (count.toLong() * workerIndex / workerCount).toInt()
@@ -3850,7 +3849,6 @@ class MainActivity : Activity() {
             findViewById<android.widget.EditText>(R.id.storyboardEndTime).setText(formatTime(videoDurationMs))
         } finally { suppressStoryboardAutoApply = false }
         frameViews.forEach { (index, view) -> view.visibility = if (index in deletedStoryboardFrames) View.GONE else View.VISIBLE }
-        updateModeButtons()
         val uri = selectedUri
         if (uri != null && videoDurationMs > 0L) reloadStoryboardForRange(uri)
         statusText.text = "نمایش زمانی کامل: از 00:00 تا ${formatTime(videoDurationMs)}"
@@ -4042,65 +4040,6 @@ class MainActivity : Activity() {
 
 
     /** Saves every Cut-delimited timeline interval as its own file, stream-copying tracks without re-encoding. */
-    /** Writes a MediaInfo-style sidecar report from the actual saved output file. */
-    private fun writeOutputInfoReport(videoUri: Uri) {
-        try {
-            val displayName = contentResolver.query(videoUri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                if (c.moveToFirst()) c.getString(0) else null
-            } ?: "EVC_output.mp4"
-            val size = contentResolver.openAssetFileDescriptor(videoUri, "r")?.use { it.length } ?: -1L
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(this, videoUri)
-            fun meta(key: Int): String = retriever.extractMetadata(key)?.takeIf { it.isNotBlank() } ?: "Not available"
-            val duration = meta(MediaMetadataRetriever.METADATA_KEY_DURATION).toLongOrNull()?.let { "${it} ms" } ?: "Not available"
-            val width = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-            val height = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-            val frameRate = meta(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
-            val date = meta(MediaMetadataRetriever.METADATA_KEY_DATE)
-            val extractor = MediaExtractor()
-            extractor.setDataSource(this, videoUri, null)
-            val report = StringBuilder()
-            report.append("General\nComplete name : ").append(displayName).append("\nFormat : ").append(if (displayName.endsWith(".mkv", true)) "Matroska (MKV)" else "MP4 container").append("\nFile size : ")
-                .append(if (size >= 0) String.format(java.util.Locale.US, "%.2f KiB", size / 1024.0) else "Not available")
-                .append("\nDuration : ").append(duration).append("\nEncoded date : ").append(date).append("\n\n")
-            var videoIndex = 0
-            var audioIndex = 0
-            for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                val mime = f.getString(MediaFormat.KEY_MIME) ?: "Not available"
-                if (mime.startsWith("video/")) {
-                    videoIndex++
-                    report.append("Video #").append(videoIndex).append("\nFormat : ").append(mime).append("\nCodec ID : ").append(mime)
-                    report.append("\nWidth : ").append(if (f.containsKey(MediaFormat.KEY_WIDTH)) f.getInteger(MediaFormat.KEY_WIDTH) else width).append(" pixels")
-                    report.append("\nHeight : ").append(if (f.containsKey(MediaFormat.KEY_HEIGHT)) f.getInteger(MediaFormat.KEY_HEIGHT) else height).append(" pixels")
-                    if (f.containsKey(MediaFormat.KEY_FRAME_RATE)) report.append("\nFrame rate : ").append(f.getInteger(MediaFormat.KEY_FRAME_RATE)).append(" FPS") else report.append("\nFrame rate : ").append(frameRate)
-                    report.append("\nBit rate : ").append(if (f.containsKey(MediaFormat.KEY_BIT_RATE)) "${f.getInteger(MediaFormat.KEY_BIT_RATE)} b/s" else "Not available")
-                    report.append("\nProfile : ").append(if (f.containsKey(MediaFormat.KEY_PROFILE)) f.getInteger(MediaFormat.KEY_PROFILE) else "Not available")
-                    report.append("\nColor format : ").append(if (f.containsKey(MediaFormat.KEY_COLOR_FORMAT)) f.getInteger(MediaFormat.KEY_COLOR_FORMAT) else "Not available").append("\n\n")
-                } else if (mime.startsWith("audio/")) {
-                    audioIndex++
-                    report.append("Audio #").append(audioIndex).append("\nFormat : ").append(mime).append("\nCodec ID : ").append(mime)
-                    report.append("\nBit rate : ").append(if (f.containsKey(MediaFormat.KEY_BIT_RATE)) "${f.getInteger(MediaFormat.KEY_BIT_RATE)} b/s" else "Not available")
-                    report.append("\nSampling rate : ").append(if (f.containsKey(MediaFormat.KEY_SAMPLE_RATE)) "${f.getInteger(MediaFormat.KEY_SAMPLE_RATE)} Hz" else "Not available")
-                    report.append("\nChannel(s) : ").append(if (f.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) f.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else "Not available")
-                    report.append("\nLanguage : ").append(if (f.containsKey(MediaFormat.KEY_LANGUAGE)) f.getString(MediaFormat.KEY_LANGUAGE) else "Not available").append("\n\n")
-                }
-            }
-            extractor.release(); retriever.release()
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName.substringBeforeLast('.', displayName) + "_Info.txt")
-                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
-                if (android.os.Build.VERSION.SDK_INT >= 29) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/EVC_Info")
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-            }
-            val reportUri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
-            contentResolver.openOutputStream(reportUri)?.bufferedWriter(Charsets.UTF_8)?.use { it.write(report.toString()) }
-            if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(reportUri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
-        } catch (_: Exception) { /* Report failure must not invalidate a successfully exported video. */ }
-    }
-
     /** Exports the timeline edit (cut points + deleted ranges) as one continuous video.
      *  This path is intentionally independent of storyboard frame selection.
      */
@@ -4154,7 +4093,7 @@ class MainActivity : Activity() {
                         put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_timeline_edited_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
                         put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVEW"))
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
@@ -4163,10 +4102,10 @@ class MainActivity : Activity() {
                     contentResolver.openOutputStream(outUri)?.use { out -> FileInputStream(file).use { it.copyTo(out) } }
                         ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(outUri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
-                    writeOutputInfoReport(outUri)
+                    
                     file.delete()
                     restoreNormalStoryboardAfterExport()
-                    statusText.text = if (preserveSourceCodec) "خروجی نوار زمان با حفظ کدک اصلی در Movies/EVEW ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند." else "خروجی نوار زمان در Movies/EVC ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند و استوری‌بورد دخالتی نداشت."
+                    statusText.text = if (preserveSourceCodec) "خروجی نوار زمان با حفظ کدک اصلی در Movies/EVEW ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند." else "خروجی نوار زمان در Movies/EVEW ذخیره شد؛ بخش‌های حذف‌شده کنار گذاشته شدند و استوری‌بورد دخالتی نداشت."
                     Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     file.delete()
@@ -4224,7 +4163,7 @@ class MainActivity : Activity() {
                         put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_segment_${(index + 1).toString().padStart(3, '0')}_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
                         put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVEW"))
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
@@ -4236,7 +4175,7 @@ class MainActivity : Activity() {
                         val done = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
                         contentResolver.update(outUri, done, null, null)
                     }
-                    writeOutputInfoReport(outUri!!)
+                    
                     saved++
                 } catch (e: Exception) {
                     outUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) { } }
@@ -4643,7 +4582,6 @@ class MainActivity : Activity() {
         }
         actionsRow.addView(actionButton("Splits") { showOriginalSplitDialog() })
         actionsRow.addView(actionButton("Save As") { launchSaveAs() })
-        actionsRow.addView(actionButton("Original Codecs") { exportOriginalCodecSelections() })
         panel.addView(actionsRow)
 
         AlertDialog.Builder(this)
@@ -4838,8 +4776,7 @@ class MainActivity : Activity() {
                     gestureStartY = event.y; gestureMoved = false
                     activeGestureControl = if (event.x < view.width / 2f) 1 else 2
                     gestureStartValue = if (activeGestureControl == 1) {
-                        val current = window.attributes.screenBrightness
-                        if (current < 0f) 0.5f else current
+                        playerBrightness
                     } else {
                         val manager = getSystemService(AUDIO_SERVICE) as AudioManager
                         manager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
@@ -4852,10 +4789,14 @@ class MainActivity : Activity() {
                         gestureMoved = true
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                         if (activeGestureControl == 1) {
-                            val attrs = window.attributes
-                            attrs.screenBrightness = (gestureStartValue + dy / view.height.coerceAtLeast(1) * 1.4f).coerceIn(0.02f, 1f)
-                            window.attributes = attrs
-                            statusText.text = "نور صفحه: ${(attrs.screenBrightness * 100).toInt()}٪"
+                            playerBrightness = (gestureStartValue + dy / view.height.coerceAtLeast(1) * 1.4f).coerceIn(0.25f, 1.75f)
+                            val overlayColor = if (playerBrightness < 1f) {
+                                Color.argb(((1f - playerBrightness) * 210f).toInt().coerceIn(0, 210), 0, 0, 0)
+                            } else {
+                                Color.argb(((playerBrightness - 1f) * 105f).toInt().coerceIn(0, 78), 255, 255, 255)
+                            }
+                            playerBrightnessOverlay.setBackgroundColor(overlayColor)
+                            statusText.text = "روشنایی تصویر پلیر: ${(playerBrightness * 100).toInt()}٪"
                         } else {
                             val manager = getSystemService(AUDIO_SERVICE) as AudioManager
                             val max = manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
@@ -4974,23 +4915,23 @@ class MainActivity : Activity() {
             var output: File? = null
             var error: String? = null
             try {
-                baseFile = copyUriToCache(sourceUri, "evc_combined_base")
-                if (secondUri != null) overlayFile = copyUriToCache(secondUri, "evc_combined_overlay")
-                if (audioUri != null) audioFile = copyUriToCache(audioUri, "evc_combined_audio")
-                if (subtitleUri != null) subtitleFile = copyUriToCache(subtitleUri, "evc_combined_subtitle")
+                baseFile = copyUriToCache(sourceUri, "evew_combined_base")
+                if (secondUri != null) overlayFile = copyUriToCache(secondUri, "evew_combined_overlay")
+                if (audioUri != null) audioFile = copyUriToCache(audioUri, "evew_combined_audio")
+                if (subtitleUri != null) subtitleFile = copyUriToCache(subtitleUri, "evew_combined_subtitle")
                 if (text.isNotEmpty()) {
-                    textFile = File(cacheDir, "evc_combined_text_${System.currentTimeMillis()}.txt")
+                    textFile = File(cacheDir, "evew_combined_text_${System.currentTimeMillis()}.txt")
                     textFile.writeText(text, Charsets.UTF_8)
                 }
                 val coverIndex = selectedCoverFrameIndex
                 val coverBitmap = coverIndex?.let { frameBitmaps[it] }
                 var coverInputIndex: Int? = null
                 if (coverBitmap != null && !outputContainerMatroska) {
-                    coverFile = File(cacheDir, "evc_cover_${System.currentTimeMillis()}.jpg")
+                    coverFile = File(cacheDir, "evew_cover_${System.currentTimeMillis()}.jpg")
                     FileOutputStream(coverFile).use { coverBitmap.compress(Bitmap.CompressFormat.JPEG, 92, it) }
                 }
                 val ext = outputExtension()
-                output = File(cacheDir, "evc_changes_${System.currentTimeMillis()}.$ext")
+                output = File(cacheDir, "evew_changes_${System.currentTimeMillis()}.$ext")
                 val args = mutableListOf("-y", "-filter_threads", "1", "-filter_complex_threads", "1", "-threads", "1", "-i", baseFile.absolutePath)
                 var nextInput = 1
                 val overlayIndex = if (overlayFile != null) nextInput++ else null
@@ -5011,47 +4952,47 @@ class MainActivity : Activity() {
                 if (requiresVideoReencode && cropChanged) {
                     val widthPct = (100 - cropLeftPct - cropRightPct).coerceIn(10, 100)
                     val heightPct = (100 - cropTopPct - cropBottomPct).coerceIn(10, 100)
-                    graph.add("[$current]crop=iw*$widthPct/100:ih*$heightPct/100:iw*$cropLeftPct/100:ih*$cropTopPct/100[evc_crop]")
-                    current = "evc_crop"
+                    graph.add("[$current]crop=iw*$widthPct/100:ih*$heightPct/100:iw*$cropLeftPct/100:ih*$cropTopPct/100[evew_crop]")
+                    current = "evew_crop"
                 }
                 if (requiresVideoReencode && autoColorEnabled) {
                     // Heuristic colorization: bright pixels lean sky-blue, darker midtones green,
                     // and middle/high midtones warm. This is not semantic AI object recognition.
-                    graph.add("[$current]format=gray,split=7[evc_sky_src][evc_green_src][evc_skin_src][evc_sky_luma][evc_green_luma][evc_skin_luma][evc_gray_final]")
-                    graph.add("[evc_sky_src]colorize=hue=210:saturation=0.32:mix=0.62,format=yuv420p[evc_sky]")
-                    graph.add("[evc_green_src]colorize=hue=105:saturation=0.28:mix=0.48,format=yuv420p[evc_green]")
-                    graph.add("[evc_skin_src]colorize=hue=25:saturation=0.24:mix=0.34,format=yuv420p[evc_skin]")
-                    graph.add("[evc_sky_luma]lut=y='if(gte(val,175),255,0)'[evc_sky_mask]")
-                    graph.add("[evc_green_luma]lut=y='if(between(val,35,145),255,0)'[evc_green_mask]")
-                    graph.add("[evc_skin_luma]lut=y='if(between(val,90,205),255,0)'[evc_skin_mask]")
-                    graph.add("[evc_gray_final]format=yuv420p[evc_gray_colorbase]")
-                    graph.add("[evc_gray_colorbase][evc_sky][evc_sky_mask]maskedmerge[evc_auto_sky]")
-                    graph.add("[evc_auto_sky][evc_green][evc_green_mask]maskedmerge[evc_auto_green]")
-                    graph.add("[evc_auto_green][evc_skin][evc_skin_mask]maskedmerge[evc_auto]")
-                    current = "evc_auto"
+                    graph.add("[$current]format=gray,split=7[evew_sky_src][evew_green_src][evew_skin_src][evew_sky_luma][evew_green_luma][evew_skin_luma][evew_gray_final]")
+                    graph.add("[evew_sky_src]colorize=hue=210:saturation=0.32:mix=0.62,format=yuv420p[evew_sky]")
+                    graph.add("[evew_green_src]colorize=hue=105:saturation=0.28:mix=0.48,format=yuv420p[evew_green]")
+                    graph.add("[evew_skin_src]colorize=hue=25:saturation=0.24:mix=0.34,format=yuv420p[evew_skin]")
+                    graph.add("[evew_sky_luma]lut=y='if(gte(val,175),255,0)'[evew_sky_mask]")
+                    graph.add("[evew_green_luma]lut=y='if(between(val,35,145),255,0)'[evew_green_mask]")
+                    graph.add("[evew_skin_luma]lut=y='if(between(val,90,205),255,0)'[evew_skin_mask]")
+                    graph.add("[evew_gray_final]format=yuv420p[evew_gray_colorbase]")
+                    graph.add("[evew_gray_colorbase][evew_sky][evew_sky_mask]maskedmerge[evew_auto_sky]")
+                    graph.add("[evew_auto_sky][evew_green][evew_green_mask]maskedmerge[evew_auto_green]")
+                    graph.add("[evew_auto_green][evew_skin][evew_skin_mask]maskedmerge[evew_auto]")
+                    current = "evew_auto"
                 }
                 val rgb = currentRgbProfile()
                 if (requiresVideoReencode) {
-                    graph.add("[$current]colorchannelmixer=rr=${rgb.red}:gg=${rgb.green}:bb=${rgb.blue},eq=saturation=${rgb.saturation}[evc_color]")
-                    current = "evc_color"
+                    graph.add("[$current]colorchannelmixer=rr=${rgb.red}:gg=${rgb.green}:bb=${rgb.blue},eq=saturation=${rgb.saturation}[evew_color]")
+                    current = "evew_color"
                 }
                 if (requiresVideoReencode && overlayIndex != null) {
                     val w = overlayVideoWidthPercent.coerceIn(5, 90)
                     val x = overlayVideoXPercent.coerceIn(0, 100 - w)
                     val y = overlayVideoYPercent.coerceIn(0, 95)
-                    graph.add("[$overlayIndex:v][$current]scale2ref=w=main_w*$w/100:h=ow/mdar[evc_small][evc_base]")
+                    graph.add("[$overlayIndex:v][$current]scale2ref=w=main_w*$w/100:h=ow/mdar[evew_small][evew_base]")
                     val overlayStartSeconds = String.format(java.util.Locale.US, "%.3f", (overlayStartMs ?: 0L) / 1000.0)
                     val overlayEndSeconds = String.format(java.util.Locale.US, "%.3f", (overlayEndMs ?: videoDurationMs) / 1000.0)
-                    graph.add("[evc_base][evc_small]overlay=x='main_w*$x/100':y='main_h*$y/100':eof_action=pass:enable='between(t\\,$overlayStartSeconds\\,$overlayEndSeconds)'[evc_overlay]")
-                    current = "evc_overlay"
+                    graph.add("[evew_base][evew_small]overlay=x='main_w*$x/100':y='main_h*$y/100':eof_action=pass:enable='between(t\\,$overlayStartSeconds\\,$overlayEndSeconds)'[evew_overlay]")
+                    current = "evew_overlay"
                 }
                 if (requiresVideoReencode && textFile != null) {
                     val safePath = textFile.absolutePath.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
                     val startSeconds = String.format(java.util.Locale.US, "%.3f", (textStartMs ?: 0L) / 1000.0)
                     val endSeconds = String.format(java.util.Locale.US, "%.3f", (textEndMs ?: videoDurationMs) / 1000.0)
                     val draw = "drawtext=fontfile='/system/fonts/Roboto-Regular.ttf':textfile='$safePath':fontsize=${liveTextSize.coerceIn(8,160)}:fontcolor=white:borderw=2:bordercolor=black:x='w*${textXPercent.coerceIn(0,100)}/100':y='h*${textYPercent.coerceIn(0,100)}/100':enable='between(t\\,$startSeconds\\,$endSeconds)'"
-                    graph.add("[$current]$draw[evc_text]")
-                    current = "evc_text"
+                    graph.add("[$current]$draw[evew_text]")
+                    current = "evew_text"
                 }
                 if (requiresVideoReencode) {
                     args.addAll(listOf("-filter_complex", graph.joinToString(";"), "-map", "[$current]"))
@@ -5103,15 +5044,15 @@ class MainActivity : Activity() {
                 try {
                     val finalExt = outputExtension()
                     val values = ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_Changes_${System.currentTimeMillis()}", finalExt))
+                        put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_Changes_${System.currentTimeMillis()}", finalExt))
                         put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
                     val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                        ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                     contentResolver.openOutputStream(outUri)?.use { stream -> FileInputStream(result).use { it.copyTo(stream) } }
                         ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(outUri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
@@ -5126,11 +5067,11 @@ class MainActivity : Activity() {
                     if (coverWasAdded) applied.add("کاور انتخابی")
                     restoreNormalStoryboardAfterExport()
                     statusText.text = if (!requiresVideoReencode) {
-                        "خروجی (${applied.joinToString("، ")}) در Movies/EVC ذخیره شد؛ کدک ویدیوی اصلی بدون رمزگذاری مجدد حفظ شد."
+                        "خروجی (${applied.joinToString("، ")}) در Movies/EVEW ذخیره شد؛ کدک ویدیوی اصلی بدون رمزگذاری مجدد حفظ شد."
                     } else {
-                        "خروجی مشترک (${applied.joinToString("، ")}) در Movies/EVC ذخیره شد؛ برای اعمال تغییرات تصویری، ویدیو دوباره رمزگذاری شد."
+                        "خروجی مشترک (${applied.joinToString("، ")}) در Movies/EVEW ذخیره شد؛ برای اعمال تغییرات تصویری، ویدیو دوباره رمزگذاری شد."
                     }
-                    Toast.makeText(this, "خروجی تغییرات در Movies/EVC ذخیره شد", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "خروجی تغییرات در Movies/EVEW ذخیره شد", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     result.delete()
                     statusText.text = "ذخیرهٔ خروجی تغییرات ناموفق بود: ${e.message ?: "خطا"}"
@@ -5150,7 +5091,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "ابتدا تنظیمات Crop را ثبت کنید", Toast.LENGTH_LONG).show()
             return
         }
-        val output = File(cacheDir, "evc_crop_${System.currentTimeMillis()}.mp4")
+        val output = File(cacheDir, "evew_crop_${System.currentTimeMillis()}.mp4")
         val button = findViewById<Button>(R.id.cropButton)
         button.isEnabled = false
         statusText.text = "در حال اعمال Crop واقعی و رمزگذاری مجدد ویدیو…"
@@ -5170,25 +5111,25 @@ class MainActivity : Activity() {
                         activeTransformer = null
                         try {
                             val values = ContentValues().apply {
-                                put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_Crop_${System.currentTimeMillis()}", "mp4"))
+                                put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_Crop_${System.currentTimeMillis()}", "mp4"))
                                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                                 if (android.os.Build.VERSION.SDK_INT >= 29) {
-                                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                                     put(MediaStore.Video.Media.IS_PENDING, 1)
                                 }
                             }
                             val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                                ?: throw IllegalStateException("ساخت فایل در Movies/EVC ممکن نشد")
+                                ?: throw IllegalStateException("ساخت فایل در Movies/EVEW ممکن نشد")
                             contentResolver.openOutputStream(outUri)?.use { out -> FileInputStream(output).use { it.copyTo(out) } }
                                 ?: throw IllegalStateException("نوشتن فایل Crop ناموفق بود")
                             if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(outUri, ContentValues().apply {
                                 put(MediaStore.Video.Media.IS_PENDING, 0)
                             }, null, null)
-                            writeOutputInfoReport(outUri)
+                            
                             output.delete()
                             button.isEnabled = true
                     restoreNormalStoryboardAfterExport()
-                            statusText.text = "خروجی Crop واقعی در Movies/EVC ذخیره شد. برای اعمال برش، ویدیو رمزگذاری مجدد شده است."
+                            statusText.text = "خروجی Crop واقعی در Movies/EVEW ذخیره شد. برای اعمال برش، ویدیو رمزگذاری مجدد شده است."
                             Toast.makeText(this@MainActivity, statusText.text, Toast.LENGTH_LONG).show()
                         } catch (e: Exception) {
                             output.delete(); button.isEnabled = true
@@ -5290,26 +5231,26 @@ class MainActivity : Activity() {
                 if (file != null && file.exists() && file.length() > 0L) {
                     try {
                         val values = ContentValues().apply {
-                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVC_edited_${System.currentTimeMillis()}", outputExtension()))
+                            put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_edited_${System.currentTimeMillis()}", outputExtension()))
                             put(MediaStore.Video.Media.MIME_TYPE, outputMimeType())
                             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVC")
+                                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/EVEW")
                                 put(MediaStore.Video.Media.IS_PENDING, 1)
                             }
                         }
                         val outUri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                        if (outUri == null) throw IllegalStateException("ساخت فایل در پوشهٔ Movies/EVC ممکن نشد")
+                        if (outUri == null) throw IllegalStateException("ساخت فایل در پوشهٔ Movies/EVEW ممکن نشد")
                         contentResolver.openOutputStream(outUri)?.use { out -> FileInputStream(file).use { input -> input.copyTo(out) } }
                             ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
                             val done = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
                             contentResolver.update(outUri, done, null, null)
                         }
-                        writeOutputInfoReport(outUri)
+                        
                         file.delete()
                     restoreNormalStoryboardAfterExport()
-                        statusText.text = "ویدیوی خروجی در Movies/EVC ذخیره شد (بدون رمزگذاری مجدد)"
-                        Toast.makeText(this, "ویدیوی خروجی در پوشهٔ Movies/EVC ذخیره شد", Toast.LENGTH_LONG).show()
+                        statusText.text = "ویدیوی خروجی در Movies/EVEW ذخیره شد (بدون رمزگذاری مجدد)"
+                        Toast.makeText(this, "ویدیوی خروجی در پوشهٔ Movies/EVEW ذخیره شد", Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         statusText.text = "انتقال خروجی به پوشهٔ ویدیوها ناموفق بود: ${e.message ?: "خطا"}"
                         Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show()
@@ -5352,7 +5293,7 @@ class MainActivity : Activity() {
                         put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_timeline_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
                         put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                         if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
+                            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVEW"))
                             put(MediaStore.Video.Media.IS_PENDING, 1)
                         }
                     }
@@ -5361,11 +5302,11 @@ class MainActivity : Activity() {
                     contentResolver.openOutputStream(outUri)?.use { out -> FileInputStream(file).use { input -> input.copyTo(out) } }
                         ?: throw IllegalStateException("نوشتن فایل خروجی ناموفق بود")
                     if (android.os.Build.VERSION.SDK_INT >= 29) contentResolver.update(outUri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
-                    writeOutputInfoReport(outUri)
+                    
                     file.delete()
                     selectedTimelineRange = null
                     restoreNormalStoryboardAfterExport()
-                    statusText.text = if (preserveSourceCodec) "فقط بازهٔ انتخاب‌شده با حفظ کدک اصلی در Movies/EVEW ذخیره شد" else "فقط بازهٔ انتخاب‌شده در Movies/EVC ذخیره شد؛ تنظیمات استوری‌بورد و حذف‌ها دخالت داده نشدند"
+                    statusText.text = if (preserveSourceCodec) "فقط بازهٔ انتخاب‌شده با حفظ کدک اصلی در Movies/EVEW ذخیره شد" else "فقط بازهٔ انتخاب‌شده در Movies/EVEW ذخیره شد؛ تنظیمات استوری‌بورد و حذف‌ها دخالت داده نشدند"
                     Toast.makeText(this, statusText.text, Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     statusText.text = "ذخیرهٔ فایل ناموفق بود: ${e.message ?: "خطا"}"
@@ -5454,7 +5395,7 @@ class MainActivity : Activity() {
                     put(MediaStore.Video.Media.DISPLAY_NAME, requestedOutputDisplayName("EVEW_selected_storyboard_${System.currentTimeMillis()}", if (preserveSourceCodec) sourceCodecContainer(source).first else outputExtension()))
                     put(MediaStore.Video.Media.MIME_TYPE, if (preserveSourceCodec) sourceCodecContainer(source).second else outputMimeType())
                     if (android.os.Build.VERSION.SDK_INT >= 29) {
-                        put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVC"))
+                        put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + (if (preserveSourceCodec) "/EVEW" else "/EVEW"))
                         put(MediaStore.Video.Media.IS_PENDING, 1)
                     }
                 }
@@ -5468,7 +5409,7 @@ class MainActivity : Activity() {
                         put(MediaStore.Video.Media.IS_PENDING, 0)
                     }, null, null)
                 }
-                writeOutputInfoReport(outUri!!)
+                
             } catch (e: Exception) {
                 error = e.message ?: e.javaClass.simpleName
                 outUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) { } }
@@ -5522,10 +5463,10 @@ class MainActivity : Activity() {
      */
     private fun muxRangesToMatroska(source: Uri, ranges: List<Pair<Long, Long>>): File {
         val stamp = System.currentTimeMillis()
-        val input = File(cacheDir, "evc_mkv_source_$stamp.bin")
+        val input = File(cacheDir, "evew_mkv_source_$stamp.bin")
         val segments = mutableListOf<File>()
-        val concatList = File(cacheDir, "evc_mkv_concat_$stamp.txt")
-        val output = File(cacheDir, "evc_export_$stamp.mkv")
+        val concatList = File(cacheDir, "evew_mkv_concat_$stamp.txt")
+        val output = File(cacheDir, "evew_export_$stamp.mkv")
         try {
             contentResolver.openInputStream(source)?.use { src ->
                 input.outputStream().use { dst -> src.copyTo(dst) }
@@ -5533,7 +5474,7 @@ class MainActivity : Activity() {
             if (input.length() == 0L) throw IllegalStateException("فایل ویدیوی اصلی خالی است")
 
             ranges.filter { it.second > it.first }.forEachIndexed { index, range ->
-                val segment = File(cacheDir, "evc_mkv_part_${stamp}_$index.mkv")
+                val segment = File(cacheDir, "evew_mkv_part_${stamp}_$index.mkv")
                 val start = range.first.coerceAtLeast(0L) / 1000.0
                 val duration = (range.second - range.first).coerceAtLeast(0L) / 1000.0
                 if (duration <= 0.0) return@forEachIndexed
@@ -5595,7 +5536,7 @@ class MainActivity : Activity() {
                 "برای حفظ همهٔ ترک‌ها باید خروجی‌گیر FFmpeg با پشتیبانی از کپی همهٔ ترک‌ها اضافه شود."
             )
         }
-        val output = File(cacheDir, "evc_export_${System.currentTimeMillis()}.mp4")
+        val output = File(cacheDir, "evew_export_${System.currentTimeMillis()}.mp4")
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         val trackMap = mutableMapOf<Int, Int>()
         for (i in 0 until probe.trackCount) {
@@ -5672,11 +5613,6 @@ class MainActivity : Activity() {
             throw IllegalStateException("هیچ بازهٔ قابل‌خروجی باقی نماند؛ ممکن است برش این کدک با حفظ کدک پشتیبانی نشود")
         }
         return output
-    }
-
-    private fun updateModeButtons() {
-        timeModeButton.backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(255, 210, 31))
-        timeModeButton.setTextColor(Color.rgb(7, 20, 47))
     }
 
     private fun updateStoryboardPlaybackHighlight(positionMs: Long) {
